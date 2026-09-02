@@ -36,7 +36,7 @@ name: poll
 on:
   schedule:
     # UTC 기준. 00:00~09:00 UTC = 09:00~18:00 KST, 평일만.
-    - cron: "*/30 0-9 * * 1-5"
+    - cron: "*/15 0-9 * * 1-5"
   workflow_dispatch:          # 기다리지 않고 지금 확인
 
 concurrency:
