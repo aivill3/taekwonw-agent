@@ -76,7 +76,7 @@ from tools.notion_store import (
     STATUS_COLLECTED,
     STATUS_DEFAULT,
     STATUS_HOLD,
-    STATUS_LINKED,
+    STATUS_REQUESTED_DRAFT,
     ensure_schema,
     fetch_by_status,
     fetch_page_body,
@@ -246,21 +246,21 @@ def run(
         #    확정(confirm) 시점에 실제 배치대로 Content 를 만든다.
         ensure_schema(news_ds)  # '묶음' 속성이 없으면 여기서 생긴다
 
-        # 확정됐지만 아직 초안이 안 나간 기사가 쓰고 있는 칸은 건너뛴다.
-        # confirm 은 슬롯을 비우지 않는다 — 초안을 기다리는 동안 카드가
-        # 보드에 남아 있어야 무엇이 진행 중인지 보이기 때문이다. 슬롯은
-        # publish 가 초안을 저장한 뒤에 반납한다(finish_article).
+        # 초안 작성이 요청된 기사가 쓰고 있는 칸은 건너뛴다.
+        # 버튼이 눌린 뒤 폴링이 처리하기까지 최대 30분이 걸리는데,
+        # 그 사이 슬롯은 그대로다. 슬롯은 publish 가 초안을 저장한 뒤에
+        # 반납한다(finish_article).
         #
         # 이 검사가 없으면 그 칸에 새 기사가 얹혀 한 칸에 두 묶음이 겹친다.
         # (실측 2026-09-02: 단독1~3 에 각각 2건씩 포개져 보였다)
         occupied = {
             it["bundle"]
-            for it in fetch_by_status(news_ds, STATUS_LINKED)
+            for it in fetch_by_status(news_ds, STATUS_REQUESTED_DRAFT)
             if it.get("bundle")
         }
         if occupied:
             log.info(
-                f"초안 대기 중인 칸 {len(occupied)}개는 건너뜁니다: "
+                f"초안 작성 중인 칸 {len(occupied)}개는 건너뜁니다: "
                 f"{', '.join(sorted(occupied))}"
             )
 
@@ -293,7 +293,7 @@ def run(
             pool = solo_slots if len(members) == 1 else group_slots
             if not pool:
                 # 슬롯이 모자라면 배정하지 않고 남긴다. 다음 실행에서
-                # 앞선 것들이 '초안대기'로 빠진 뒤 자리가 난다.
+                # 앞선 것들이 '작성완료'로 빠진 뒤 자리가 난다.
                 overflow.append(g.brief.title_hint[:40])
                 continue
 
@@ -313,7 +313,7 @@ def run(
             log.warning(
                 f"슬롯 부족으로 {len(overflow)}편 미배정 "
                 f"(단독 {len(BUNDLE_SOLO_SLOTS)}칸 · 묶음 {len(BUNDLE_GROUP_SLOTS)}칸 중 "
-                f"{len(occupied)}칸이 초안 대기 중)"
+                f"{len(occupied)}칸이 작성 대기 중)"
             )
             for t in overflow:
                 log.warning(f"    - {t}")

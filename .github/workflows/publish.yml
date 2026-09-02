@@ -3,6 +3,7 @@
 # 버튼 → 웹훅 → GitHub workflow_dispatch → 이 파일.
 #
 #   action=confirm              보드 배치를 검증해 '초안대기'로 확정
+#                               (거부된 칸에는 카드에 '⚠️ 승인 불가' 를 남긴다)
 #   action=publish              '초안대기' 전부 작성 (limit 으로 제한 가능)
 #   action=publish + bundle_id  그 묶음만 작성  ← 행에 붙은 버튼이 쓰는 경로
 #   action=images               이미 나온 초안에 삽화만 채우기
@@ -20,7 +21,7 @@ on:
         required: true
         default: publish
         type: choice
-        options: [confirm, confirm-check, publish, images]
+        options: [confirm, publish, images]
       bundle_id:
         description: "묶음ID (publish 전용, 예: 20260902-04). 비우면 전부"
         required: false
@@ -75,7 +76,6 @@ jobs:
         run: |
           case "${{ inputs.action }}" in
             confirm)       uv run python run.py confirm ;;
-            confirm-check) uv run python run.py confirm --check ;;
             images)        uv run python run.py images ;;
             publish)
               ARGS=""

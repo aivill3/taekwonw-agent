@@ -61,7 +61,7 @@ PROP_BUNDLE_STATE = "묶음상태"  # type: select — 배치가 규칙에 맞�
 # 같은 칸을 써도 앞 회차와 섞이지 않게 한다.
 #
 #   확정 전   묶음=단독1        묶음ID=(빈값)        상태=선정됨
-#   확정 후   묶음=(빈값)       묶음ID=20260901-01   상태=초안대기
+#   확정 후   묶음=단독1        묶음ID=20260902-01   상태=초안요청
 #
 # select 가 아니라 rich_text 인 이유: 매일 새 값이 생기는데 select 옵션은
 # API 로 지울 수 없어 한 달이면 수백 개가 쌓인다.
@@ -105,7 +105,7 @@ MODE_HOLD = "보류"
 PROP_SUBTOPICS = [f"소주제{i}" for i in range(1, 5)]  # type: rich_text ×4
 
 # 상태 흐름:
-#   수집됨 ──(자동 선정)──→ 선정됨 ──(confirm)──→ 초안대기 ──(publish)──→ 작성완료
+#   수집됨 ──(자동 선정)──→ 선정됨 ──(버튼)──→ 초안요청 ──(confirm+publish)──→ 작성완료
 #      └──(사람이 직접 지정)──→ 선정요청 ──(소주제 생성)──→ 선정됨
 #   검토 후 거절하면 보류
 #
@@ -115,15 +115,35 @@ PROP_SUBTOPICS = [f"소주제{i}" for i in range(1, 5)]  # type: rich_text ×4
 STATUS_COLLECTED = "수집됨"    # 수집·정제만 된 상태 (사람이 훑어보는 목록)
 STATUS_REQUESTED = "선정요청"  # 사람이 직접 고름 → 소주제 생성 대기
 STATUS_DEFAULT = "선정됨"      # 소주제까지 생성. 보드에서 묶음 배치 대기
-STATUS_LINKED = "초안대기"     # Content 행으로 확정됨. publish 를 기다린다
+STATUS_REQUESTED_DRAFT = "초안요청"  # 사람이 [초안 작성] 을 눌렀다
 STATUS_WRITTEN = "작성완료"    # 블로그 초안 생성 완료
 STATUS_HOLD = "보류"
+
+# 확정과 작성 사이에 상태를 두지 않는다
+# ---------------------------------
+# 예전에는 '초안대기' 가 하나 더 있었다. confirm 이 '선정됨' 을 '초안대기'
+# 로 바꾸고, 사람이 그중에서 오늘 돌릴 것을 골랐다.
+#
+# 그런데 사람이 하는 판단은 하나뿐이다 — "이 배치로 글을 쓴다". 배치를
+# 끝내고 버튼을 누르면 그것으로 끝나야 한다. 중간 상태는 코드가 스쳐
+# 지나갈 뿐인데 보드에 칸이 하나 더 생겨 혼란만 만들었다.
+#
+#   선정됨 ──[초안 작성]──→ 초안요청 ──(폴링)──→ 작성완료
+#                                       confirm + publish
+#
+# Notion 버튼은 속성 값만 바꿀 수 있고(웹훅 보내기는 유료 플랜), GitHub 를
+# 직접 부르지 못한다. 그래서 버튼이 상태를 '초안요청' 으로 바꾸고, 폴링이
+# 그 값을 보고 확정과 작성을 이어서 실행한다.
+#
+# 실패하면 '선정됨' 으로 되돌린다. '초안요청' 으로 남으면 폴링이 같은
+# 묶음을 30분마다 재시도해 Gemini 할당량을 갉아먹는다. 되돌리면 카드가
+# 보드 제자리로 돌아와 사람이 고친 뒤 다시 누를 수 있다.
 
 # 옵션 이름이 바뀐 이력. ensure_schema() 가 옛 이름을 찾으면 새 이름으로
 # 바꾼다. 옵션을 '추가'하면 기존 행의 값은 옛 이름에 남아 코드가 못 찾지만,
 # '이름 변경'은 옵션 id 가 그대로라 행 값이 함께 따라온다.
 RENAMED_OPTIONS: dict[str, dict[str, str]] = {
-    PROP_STATUS: {"콘텐츠연결": STATUS_LINKED},
+    PROP_STATUS: {"콘텐츠연결": STATUS_REQUESTED_DRAFT},
 }
 
 # --- API 제약 ---
@@ -268,7 +288,7 @@ EXPECTED_PROPS: dict[str, dict] = {
                 {"name": STATUS_COLLECTED, "color": "default"},
                 {"name": STATUS_REQUESTED, "color": "orange"},
                 {"name": STATUS_DEFAULT, "color": "yellow"},
-                {"name": STATUS_LINKED, "color": "blue"},
+                {"name": STATUS_REQUESTED_DRAFT, "color": "pink"},
                 {"name": STATUS_WRITTEN, "color": "green"},
                 {"name": STATUS_HOLD, "color": "gray"},
             ]
@@ -1102,7 +1122,10 @@ def set_bundle_id(page_id: str, bundle_id: str | None) -> None:
 
 
 def confirm_bundle(page_id: str, bundle_id: str) -> None:
-    """확정 처리 — 고유 이름을 붙이고 '초안대기'로 넘긴다.
+    """확정 처리 — 고유 이름을 붙이고 판정 칩을 지운다.
+
+    상태는 건드리지 않는다. 이미 '초안요청' 이고, publish 가 끝나야
+    '작성완료' 로 간다. 묶음ID 가 붙었다는 것이 곧 '확정됨' 의 표시다.
 
     슬롯은 그대로 둔다. 확정했다고 카드가 보드에서 사라지면 무엇이
     초안을 기다리는 중인지 볼 수 없다. 슬롯은 초안이 나간 뒤
@@ -1119,7 +1142,9 @@ def confirm_bundle(page_id: str, bundle_id: str) -> None:
                 PROP_BUNDLE_ID: {
                     "rich_text": [{"text": {"content": bundle_id[:MAX_TEXT_LEN]}}]
                 },
-                PROP_STATUS: {"select": {"name": STATUS_LINKED}},
+                # 확정된 카드에 '✅ 승인 가능'이 남아 있으면 무엇을 더
+                # 기다리는 것처럼 보인다. 묶음ID 가 붙은 것이 곧 결과다.
+                PROP_BUNDLE_STATE: {"select": None},
             }
         },
     )

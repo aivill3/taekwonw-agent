@@ -5,8 +5,9 @@
     py run.py content                기사를 묶어 보드의 '묶음' 슬롯에 배정
       [사람이 Notion 보드에서 카드를 끌어 배치 조정]
     py run.py confirm --check        배치 점검 — 카드에 승인 가능/불가 표시
-    py run.py confirm                배치를 검증해 '초안대기'로 확정
+    py run.py confirm                '초안요청' 배치를 검증해 묶음ID 부여
     py run.py publish --limit 3      확정분으로 초안 작성 → Content 생성 → 삽화
+    py run.py publish --bundle-id 20260902-04    그 묶음만 작성
     py run.py images                 초안에 삽화만 나중에 붙이기
     py run.py images --redo          이미 붙은 삽화를 지우고 다시 만들기
 
@@ -30,7 +31,7 @@ Notion 보드는 "한 칸에 4개까지"를 막지 못하므로 confirm 이 검�
 
 publish 를 confirm 과 합치지 않은 것은 실행 시점을 고르기 위해서다.
 Gemini 2.0 Flash 는 RPD 20 이라 확정해 둔 것을 하루에 다 돌릴 수 없다.
---limit 으로 나눠 돌린다.
+--limit 으로 나눠 돌리고, 특정 편을 지목할 때는 --bundle-id 를 쓴다.
 
 subtopic 은 순서상 보조 경로다. 랭킹이 놓친 기사를 사람이 Notion 에서
 '선정요청' 으로 바꿔 뒀을 때만 쓴다.
@@ -88,6 +89,7 @@ def _cmd_publish(args) -> None:
         with_images=not args.no_images,
         with_quality=not args.no_quality,
         limit=args.limit,
+        bundle_id=args.bundle_id,
     )
 
 
@@ -163,7 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=_cmd_content)
 
     p = sub.add_parser(
-        "confirm", parents=[common], help="보드 배치를 검증해 '초안대기'로 확정"
+        "confirm", parents=[common], help="'초안요청' 배치를 검증해 묶음ID 부여"
     )
     p.add_argument(
         "--check", action="store_true",
@@ -186,6 +188,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--limit", type=int, default=None,
         help="이번 실행에서 처리할 묶음 수 (Gemini RPD 20 조절용, 기본=전부)",
+    )
+    p.add_argument(
+        "--bundle-id", default=None, metavar="ID",
+        help="이 묶음만 작성한다 (예: 20260902-04). --limit 은 앞에서 N편을 자를 뿐이다",
     )
     # --no-bundle 은 없앴다. 묶기가 content 단계로 옮겨가 publish 에서는
     # 할 일이 없다. 묶지 않고 쓰고 싶으면 Content 를 손으로 나누면 된다.

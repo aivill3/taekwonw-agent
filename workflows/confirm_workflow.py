@@ -2,7 +2,7 @@
 
 흐름:
   '선정됨' 조회 → '묶음' 슬롯별로 모음 → 규칙 검사
-  → 통과한 슬롯에 묶음ID 부여 → 슬롯을 비우고 상태를 '초안대기'로
+  → 통과한 슬롯에 묶음ID 부여 (상태는 '초안요청' 그대로)
 
 Content 를 만들지 않는다
 ----------------------
@@ -28,8 +28,9 @@ Content 를 만들지 않는다
 확정했다고 카드가 보드에서 사라지면 무엇이 초안을 기다리는 중인지
 볼 수 없다. 슬롯은 초안이 나간 뒤 publish 가 반납한다(finish_article).
 
-  확정 전   묶음=단독1   묶음ID=(빈값)       상태=선정됨
-  확정 후   묶음=단독1   묶음ID=20260902-01  상태=초안대기   ← 보드에 남음
+  버튼 전   묶음=단독1   묶음ID=(빈값)       상태=선정됨
+  버튼 후   묶음=단독1   묶음ID=(빈값)       상태=초안요청
+  확정 후   묶음=단독1   묶음ID=20260902-01  상태=초안요청   ← 보드에 남음
   발행 후   묶음=(빈값)  묶음ID=20260902-01  상태=작성완료   ← 칸이 빈다
 
 대신 그 사이에는 칸이 점유된 상태다. content 가 그 칸을 건너뛰도록
@@ -62,12 +63,24 @@ Notion 보드는 "이 칸에 4개까지만"을 막지 못한다. 다섯 번째 �
 
 판정 문구
 --------
---check 를 붙이면 아무것도 확정하지 않고 '묶음상태' 속성에만 결과를 쓴다.
-보드 카드 아래에 '✅ 승인 가능' / '⚠️ 승인 불가' 가 칩으로 보인다.
+확정하면서 거부된 칸에는 '⚠️ 승인 불가' 를, 짝이 부족한 '대기' 칸에는
+'⏳ 대기' 를 카드에 써 넣는다. 통과한 카드는 묶음ID 가 붙는 것이 곧
+결과이므로 칩을 지운다.
+
+  단독1  →  묶음ID 부여 (칩 없음) → publish 로 이어짐
+  묶음2  →  '선정됨' 으로 복귀 + ⚠️ 승인 불가
+
+이렇게 하는 이유는 실행을 한 번으로 끝내기 위해서다. 사람이 로그를 보지
+않는다는 전제에서는, 왜 안 넘어갔는지가 보드에 남아야 한다. 예전에는
+--check 로 미리 보고 confirm 으로 확정하는 2단계였는데, 버튼을 누르는
+사람에게 같은 일을 두 번 시키는 셈이었다.
+
+--check 는 확정 없이 판정만 보고 싶을 때 쓴다. 미리 점검하는 용도라
+CLI 에만 남긴다.
 
 Notion 은 조건부 문구를 실시간으로 띄우지 못하므로, 카드를 옮긴 뒤에는
---check 를 다시 돌려야 갱신된다. 칸 제목 옆의 '건수'는 Notion 이
-실시간으로 보여주니 함께 보면 된다.
+다시 실행해야 갱신된다. 칸 제목 옆의 '건수'는 Notion 이 실시간으로
+보여주니 함께 보면 된다.
 """
 from datetime import datetime
 
@@ -87,7 +100,7 @@ from tools.notion_store import (
     BUNDLE_WAIT,
     STATUS_DEFAULT,
     STATUS_HOLD,
-    STATUS_LINKED,
+    STATUS_REQUESTED_DRAFT,
     confirm_bundle,
     ensure_schema,
     fetch_by_status,
@@ -172,7 +185,7 @@ def _write_states(
 def _next_bundle_ids(existing: list[str], count: int) -> list[str]:
     """오늘 날짜로 다음 묶음ID 를 만든다. ['20260901-03', '20260901-04', ...]
 
-    이미 '초안대기'에 있는 같은 날짜 번호를 이어받는다. 하루에 confirm 을
+    이미 확정된 같은 날짜 번호를 이어받는다. 하루에 confirm 을
     두 번 돌려도 앞 회차와 부딪히지 않는다.
     """
     today = f"{datetime.now(KST):%Y%m%d}"
@@ -205,22 +218,31 @@ def run(*, dry_run: bool = False, check_only: bool = False) -> None:
         news_ds = resolve_data_source_id()
 
         # 스키마를 먼저 맞춘다. '대기'·'제외' 옵션 추가와
-        # '콘텐츠연결' -> '초안대기' 개명이 여기서 일어난다.
+        # '초안요청' 옵션 추가가 여기서 일어난다.
         ensure_schema(news_ds)
 
-        items = fetch_by_status(news_ds, STATUS_DEFAULT)
+        # 사람이 [초안 작성] 을 눌러 '초안요청' 으로 바꾼 것만 본다.
+        # '선정됨' 은 아직 배치 중일 수 있어 건드리지 않는다.
+        items = fetch_by_status(news_ds, STATUS_REQUESTED_DRAFT)
         if not items:
-            log.info(f"'{STATUS_DEFAULT}' 기사가 없습니다. 먼저 content 를 실행하세요.")
+            log.info(f"'{STATUS_REQUESTED_DRAFT}' 기사가 없습니다. 확정할 것이 없습니다.")
             return
 
         # 슬롯별로 모은다
         slots: dict[str, list[dict]] = {}
+        done: list[dict] = []      # 이미 묶음ID 가 붙은 것
         wait: list[dict] = []      # '대기' — 짝 부족. 상태를 건드리지 않는다
         exclude: list[dict] = []   # '제외' — 사람이 뺐다. '보류'로 넘긴다
         legacy: list[dict] = []    # 옛 '보류' 칸. 의도를 알 수 없어 건드리지 않는다
         unassigned: list[dict] = []
 
         for it in items:
+            # 이미 확정된 것. publish 가 처리할 차례라 여기서는 건드리지 않는다.
+            # (폴링이 30분마다 도는데 매번 다시 검사할 이유가 없다)
+            if it.get("bundle_id"):
+                done.append(it)
+                continue
+
             slot = it.get("bundle", "")
             if not slot:
                 unassigned.append(it)
@@ -234,8 +256,8 @@ def run(*, dry_run: bool = False, check_only: bool = False) -> None:
                 slots.setdefault(slot, []).append(it)
 
         log.info(
-            f"배치 현황: {len(slots)}개 슬롯 · 대기 {len(wait)}건 "
-            f"· 제외 {len(exclude)}건 · 미배정 {len(unassigned)}건"
+            f"배치 현황: {len(slots)}개 슬롯 · 확정됨 {len(done)}건 · "
+            f"대기 {len(wait)}건 · 제외 {len(exclude)}건 · 미배정 {len(unassigned)}건"
         )
 
         if legacy:
@@ -250,10 +272,8 @@ def run(*, dry_run: bool = False, check_only: bool = False) -> None:
             for it in legacy:
                 log.warning(f"      - {it['title'][:52]}")
 
-        # '대기'만 있는 경우에도 계속 진행한다. --check 로 판정 칩을 새로
-        # 찍어야 보드에서 어느 카드가 왜 남아 있는지 보인다.
-        if not slots and not exclude and not wait:
-            log.info("확정할 배치가 없습니다. Notion 보드에서 카드를 배치하세요.")
+        if not slots and not exclude and not wait and not unassigned:
+            log.info("새로 확정할 배치가 없습니다.")
             return
 
         # 검사 — 본문은 통과한 슬롯에서만 읽는다 (읽기 비용이 크다)
@@ -298,36 +318,65 @@ def run(*, dry_run: bool = False, check_only: bool = False) -> None:
             log.warning("확정할 수 있는 슬롯이 없습니다.")
             return
 
-        # 이미 확정된 묶음ID 를 읽어 번호를 이어받는다.
-        # 하루에 confirm 을 두 번 돌려도 앞 회차와 부딪히지 않는다.
-        pending = fetch_by_status(news_ds, STATUS_LINKED)
+        # 오늘 이미 쓴 묶음ID 를 피해 번호를 이어받는다.
         bundle_ids = _next_bundle_ids(
-            [p.get("bundle_id", "") for p in pending], len(ok_slots)
+            [d.get("bundle_id", "") for d in done], len(ok_slots)
         )
 
         confirmed = 0
         for (slot, members, reason), bid in zip(ok_slots, bundle_ids):
-            # 슬롯 비우기 + 묶음ID 부여 + '초안대기'를 한 번의 PATCH 로 보낸다.
-            # 한 기사라도 실패하면 그 묶음은 통째로 되돌린다. 절반만 넘어가면
-            # publish 가 3건짜리 묶음을 만들어 분량이 어긋난다.
-            done: list[str] = []
+            # 묶음ID 부여 + 판정 칩 제거. 상태는 '초안요청' 그대로다.
+            # 한 기사라도 실패하면 그 묶음은 통째로 되돌린다. 절반만
+            # 확정되면 publish 가 3건짜리 묶음을 만들어 분량이 어긋난다.
+            ok: list[str] = []
             try:
                 for m in members:
                     confirm_bundle(m["page_id"], bid)
-                    done.append(m["page_id"])
+                    ok.append(m["page_id"])
             except Exception as e:
                 log.warning(f"확정 실패 [{slot}] {bid}: {e}")
-                for pid in done:
+                for pid in ok:
                     try:
-                        # 슬롯은 애초에 건드리지 않았으므로 그대로 둔다
                         set_bundle_id(pid, None)
-                        update_status(pid, STATUS_DEFAULT)
                     except Exception as e2:
                         log.error(f"되돌리기 실패 ({pid[:8]}): {e2}")
                 continue
 
             confirmed += 1
             log.info(f"확정 [{slot}] -> {bid} · {len(members)}건 — {reason}")
+
+        # 규칙을 어긴 칸은 '선정됨' 으로 되돌린다.
+        #
+        # '초안요청' 으로 두면 폴링이 30분마다 같은 검사를 반복하고,
+        # 사람은 보드에서 그 카드를 다시 만질 수 없다(필터가 '선정됨'이라
+        # 화면에서 사라진다). 되돌리면 제자리로 돌아와 고친 뒤 버튼을
+        # 다시 누를 수 있다. 왜 되돌아왔는지는 판정 칩에 남는다.
+        reverted = 0
+        for slot, members in slots.items():
+            if results[slot][0]:
+                continue
+            for m in members:
+                try:
+                    update_status(m["page_id"], STATUS_DEFAULT)
+                    reverted += 1
+                except Exception as e:
+                    log.warning(f"되돌리기 실패 ({m['title'][:30]}): {e}")
+
+        # 슬롯이 없거나 '대기' 칸인 것도 마찬가지로 되돌린다.
+        # 버튼이 눌렸지만 아직 배치가 끝나지 않은 카드들이다.
+        for it in wait + unassigned:
+            try:
+                update_status(it["page_id"], STATUS_DEFAULT)
+                reverted += 1
+            except Exception as e:
+                log.warning(f"되돌리기 실패 ({it['title'][:30]}): {e}")
+
+        # 판정 칩 — 왜 남았는지 보드에서 읽을 수 있어야 한다.
+        rejected_slots = {
+            slot: members for slot, members in slots.items() if not results[slot][0]
+        }
+        if rejected_slots or wait or unassigned:
+            _write_states(rejected_slots, wait, [], unassigned, results)
 
         # '제외' 칸만 상태를 '보류'로 옮긴다. 후보 목록에서 빠지고,
         # 되살리려면 Notion 에서 '선정됨'으로 되돌리면 된다.
@@ -338,20 +387,14 @@ def run(*, dry_run: bool = False, check_only: bool = False) -> None:
             except Exception as e:
                 log.warning(f"제외 처리 실패 ({it['title'][:30]}): {e}")
 
-        # '대기' 칸은 손대지 않는다. '선정됨'으로 남아야 다음 실행에서
-        # 새로 들어온 기사와 다시 묶일 수 있다.
-        if wait:
-            log.info(f"대기 {len(wait)}건은 '{STATUS_DEFAULT}' 로 남겨 둡니다 (다음 회차 재시도)")
-
         log.info(
-            f"확정 완료: {confirmed}편 · 제외 {len(exclude)}건 · "
-            f"대기 {len(wait)}건 · 거부 {rejected}개"
+            f"확정 {confirmed}편 · 제외 {len(exclude)}건 · "
+            f"거부·미배치 {reverted}건은 '{STATUS_DEFAULT}' 로 되돌림"
         )
         if confirmed:
-            log.info(f"{confirmed}편이 '{STATUS_LINKED}' 로 넘어갔습니다.")
-            log.info("보드 필터에 '초안대기'를 넣으면 확정된 카드가 그대로 보입니다.")
-            log.info("초안을 만들려면 `run.py publish` 를 실행하세요.")
-            log.info("확정을 취소하려면 보드에서 카드를 '선정됨'으로 되돌리면 됩니다.")
+            log.info("이어서 초안을 작성합니다 (`run.py publish --requested`).")
+        if reverted:
+            log.info("되돌린 카드는 보드에서 '묶음상태' 를 확인한 뒤 다시 눌러주세요.")
         log.info("파이프라인 종료")
 
     except Exception as e:

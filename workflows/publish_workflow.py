@@ -1,7 +1,7 @@
 """블로그 초안 작성 파이프라인 (확정 이후 단계).
 
 흐름:
-  뉴스 DB '초안대기' 조회 → 묶음ID 별로 모아 DraftBrief 재구성
+  뉴스 DB '초안요청' 조회 → 묶음ID 별로 모아 DraftBrief 재구성
   → 블로그 초안 생성(LLM #2) → Content 행 생성(제목·본문 확정 상태로)
   → 소제목별 삽화 확보 → 로컬 저장 → News 를 '작성완료'로
 
@@ -26,8 +26,14 @@ confirm 이 각 기사에 '20260901-01' 같은 묶음ID 를 붙여 두었다. �
 한 번에 몇 편을 돌릴지
 --------------------
 Gemini 2.0 Flash 는 RPD 20 이라 재시도까지 감안하면 하루 10편이 실질
-상한이다. --limit 로 나눠 돌린다. 지정하지 않으면 '초안대기' 전부를
+상한이다. --limit 로 나눠 돌린다. 지정하지 않으면 '초안요청' 전부를
 처리하므로, 확정분이 쌓여 있으면 먼저 확인하는 편이 안전하다.
+
+특정 묶음만 돌리려면 --bundle-id 를 쓴다. --limit 은 앞에서 N편을 자를
+뿐이라 '이 편을 지금' 이 안 된다.
+
+    run.py publish --limit 3                  앞에서 3편
+    run.py publish --bundle-id 20260902-04    그 편만
 
 저장 위치:
   - Notion 본문: Content 페이지. 원문은 토글로 접혀 있어 초안이 먼저 보인다.
@@ -37,7 +43,7 @@ Gemini 2.0 Flash 는 RPD 20 이라 재시도까지 감안하면 하루 10편이 
   잘리고, 같은 내용이 속성과 본문에 이중으로 남아 어느 쪽이 최신인지 흐려진다.
 
 재작성 방지:
-  뉴스 상태가 '초안대기'인 것만 조회하고, 작성 후 '작성완료'로 넘긴다.
+  뉴스 상태가 '초안요청'인 것만 조회하고, 작성 후 '작성완료'로 넘긴다.
 
 슬롯 반납:
   초안이 나간 뒤에 '묶음' 슬롯을 비운다 (finish_article). 확정 시점에
@@ -51,11 +57,13 @@ from config.settings import DATA_DIR, IMAGE_SOURCE, KST
 from core.logger import get_logger, setup
 from tools.slack_notifier import notify_empty, notify_failure, notify_published
 from tools.notion_store import (
-    STATUS_LINKED,
+    STATUS_DEFAULT,
+    STATUS_REQUESTED_DRAFT,
     append_illustrated_draft,
     fetch_by_status,
     finish_article,
     insert_images_at_slots,
+    update_status,
     resolve_data_source_id,
 )
 from tools.notion_content_store import (
@@ -235,13 +243,43 @@ def build_brief(members: list[dict], solo: bool) -> DraftBrief:
     )
 
 
-def load_bundles(news_ds: str, limit: int | None = None) -> list[dict]:
-    """뉴스 DB '초안대기' 를 묶음ID 별로 모아 글 단위로 돌려준다.
+def _revert(item: dict) -> None:
+    """실패한 묶음의 뉴스 상태를 '선정됨' 으로 되돌린다.
+
+    '초안요청' 으로 남겨 두면 30분마다 도는 폴링이 같은 묶음을 계속
+    재시도한다. Gemini RPD 20 이라 몇 번 만에 그날 할당량이 사라진다.
+
+    되돌리면 카드가 보드 제자리로 돌아온다(슬롯은 그대로다). 사람이
+    확인하고 버튼을 다시 누르면 재시도된다.
+    """
+    for pid in item.get("pages", []):
+        try:
+            update_status(pid, STATUS_DEFAULT)
+        except Exception as e:
+            log.error(f"상태 되돌리기 실패 ({pid[:8]}): {e}")
+    log.info(f"'{STATUS_DEFAULT}' 로 되돌렸습니다 — 버튼을 다시 누르면 재시도합니다")
+
+
+def load_bundles(
+    news_ds: str,
+    limit: int | None = None,
+    bundle_id: str | None = None,
+    status: str = STATUS_REQUESTED_DRAFT,
+) -> list[dict]:
+    """뉴스 DB '초안요청' 을 묶음ID 별로 모아 글 단위로 돌려준다.
 
     묶음ID 가 비어 있는 기사는 건너뛴다. confirm 을 거치지 않고 사람이
-    상태만 '초안대기'로 바꾼 경우인데, 어느 글에 속하는지 알 수 없다.
+    상태만 '초안요청'으로 바꾼 경우인데, 어느 글에 속하는지 알 수 없다.
+
+    bundle_id 를 주면 그 묶음 하나만 돌려준다
+    ---------------------------------------
+    limit 은 개수만 자른다. 묶음ID 순으로 정렬해 앞에서 자르므로 어느 편이
+    돌아갈지는 코드가 정한다. '04번만 지금 돌려라' 가 안 된다.
+
+    Notion 버튼은 행에 붙는다. 사용자가 어떤 카드의 버튼을 눌렀는지가 곧
+    '그 묶음'이므로, 러너가 그것을 명령으로 옮기려면 지목 수단이 있어야 한다.
     """
-    items = fetch_by_status(news_ds, STATUS_LINKED)
+    items = fetch_by_status(news_ds, status)
     if not items:
         return []
 
@@ -254,11 +292,22 @@ def load_bundles(news_ds: str, limit: int | None = None) -> list[dict]:
         else:
             orphans.append(it)
 
-    if orphans:
-        log.warning(f"묶음ID 가 없는 '{STATUS_LINKED}' 기사 {len(orphans)}건을 건너뜁니다.")
+    # 묶음을 지목한 실행에서는 관계없는 기사를 일일이 알리지 않는다.
+    # 러너가 버튼 한 번에 이 워크플로를 부르므로 로그가 그만큼 길어진다.
+    if orphans and not bundle_id:
+        log.warning(f"묶음ID 가 없는 '{status}' 기사 {len(orphans)}건을 건너뜁니다.")
         for it in orphans:
             log.warning(f"    - {it['title'][:52]}")
         log.warning("보드에서 '선정됨'으로 되돌린 뒤 다시 확정하세요.")
+
+    if bundle_id:
+        if bundle_id not in groups:
+            known = ", ".join(sorted(groups)) or "(없음)"
+            log.warning(f"묶음ID '{bundle_id}' 를 찾지 못했습니다.")
+            log.warning(f"'{status}' 상태의 묶음: {known}")
+            return []
+        groups = {bundle_id: groups[bundle_id]}
+        log.info(f"묶음 '{bundle_id}' 만 처리합니다 ({len(groups[bundle_id])}건)")
 
     bundles: list[dict] = []
     for bid in sorted(groups):
@@ -303,6 +352,7 @@ def run(
     with_images: bool = True,
     with_quality: bool = True,
     limit: int | None = None,
+    bundle_id: str | None = None,
     no_bundle: bool = False,   # 하위호환용. 묶기는 content_workflow 로 옮겨 무시된다.
 ) -> None:
     setup()
@@ -313,20 +363,23 @@ def run(
     try:
         news_ds = resolve_data_source_id()
 
-        # 1) 뉴스 DB '초안대기' 를 묶음ID 별로 모은다.
+        # 1) 뉴스 DB '초안요청' 을 묶음ID 별로 모은다.
         #    한 묶음이 곧 글 한 편이다. 묶기는 content 가, 확정은 confirm 이
         #    이미 끝냈고, 여기서는 배치를 그대로 복원할 뿐이다.
-        bundles = load_bundles(news_ds, limit)
+        # 사람이 [초안 작성] 을 눌러 '초안요청' 이 된 것만 본다.
+        src_status = STATUS_REQUESTED_DRAFT
+
+        bundles = load_bundles(news_ds, limit, bundle_id, src_status)
         if not bundles:
-            log.info(
-                f"'{STATUS_LINKED}' 묶음이 없습니다. "
-                f"보드에서 카드를 배치한 뒤 `run.py confirm` 을 먼저 실행하세요."
-            )
-            if not dry_run:
-                notify_empty("초안 작성", f"'{STATUS_LINKED}' 묶음이 없습니다")
+            # 폴링이 30분마다 돈다. 요청이 없는 것이 정상이므로
+            # Slack 알림을 보내지 않는다.
+            if bundle_id:
+                log.info(f"묶음 '{bundle_id}' 로 작성할 것이 없습니다.")
+            else:
+                log.info(f"'{src_status}' 묶음이 없습니다. 할 일이 없습니다.")
             return
 
-        log.info(f"{STATUS_LINKED} 묶음 {len(bundles)}편")
+        log.info(f"{src_status} 묶음 {len(bundles)}편")
         for it in bundles:
             brief = it["brief"]
             lo, hi, ch = brief.target_length()
@@ -394,10 +447,11 @@ def run(
                     status=STATUS_WRITTEN,
                 ) or ""
             except Exception as e:
-                # News 상태를 바꾸지 않는다. '초안대기'로 남아야 다시 시도할 수 있다.
-                # 다만 LLM 할당량은 이미 썼으므로 원고는 로컬에라도 남긴다.
+                # 원고는 이미 만들어졌지만 저장에 실패했다. 로컬 파일로는
+                # 남으므로(8단계) 사람이 살릴 수 있다.
                 log.warning(f"Content 생성 실패 ({it['title'][:40]}): {e}")
                 it["page_id"] = ""
+                _revert(it)
                 continue
             log.info(f"Content 생성: {real_title[:50]}")
 
@@ -432,7 +486,7 @@ def run(
                     save_content_quality(it["page_id"], summary, it.get("model", ""))
 
                 # 재료로 쓰인 News 를 모두 '작성완료'로 넘기고 슬롯을 반납한다.
-                # '초안대기'로 남으면 다음 실행에서 같은 글을 또 쓰고,
+                # '초안요청'으로 남으면 다음 실행에서 같은 글을 또 쓰고,
                 # 슬롯이 남으면 다음 회차 배정분이 같은 칸에 얹힌다.
                 for pid in it.get("pages", []):
                     finish_article(pid)
@@ -443,6 +497,7 @@ def run(
             except Exception as e:
                 # 본문 저장은 됐는데 상태 변경이 실패하면 다음 실행에서 중복 작성될 수 있다.
                 log.warning(f"저장 실패 ({it['title'][:40]}): {e}")
+                _revert(it)
 
         log.info(f"초안 저장 완료 {saved}/{len(written)}건")
 
