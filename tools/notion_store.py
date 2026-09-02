@@ -1098,6 +1098,10 @@ def fetch_by_status(data_source_id: str, status: str) -> list[dict]:
                 "bundle": bundle.get("name", ""),
                 # confirm 이 붙인 고유 이름. publish 가 이 값으로 묶음을 되살린다.
                 "bundle_id": _plain_text(props.get(PROP_BUNDLE_ID, {})),
+                # confirm 이 남긴 판정. cleanup_rejected 가 이 값으로 거른다.
+                "bundle_state": (
+                    (props.get(PROP_BUNDLE_STATE) or {}).get("select") or {}
+                ).get("name", ""),
             })
         if not data.get("has_more"):
             break
@@ -1159,6 +1163,100 @@ def set_bundle_state(page_id: str, state: str | None) -> None:
 def archive_page(page_id: str) -> None:
     """휴지통으로 이동 (Notion UI에서 30일간 복구 가능)."""
     _request("PATCH", f"/pages/{page_id}", json={"in_trash": True})
+
+
+# '승인 불가' 판정을 받고 고쳐지지 않은 카드를 며칠 뒤 치울지.
+#
+# 슬롯은 열 칸뿐이다(단독 6 · 묶음 4). 거부된 카드가 칸을 붙들고 있으면
+# 다음 회차 배정분이 들어갈 자리가 없다.
+#
+#   실측(2026-09-02): 단독1·단독3 에 2건씩 몰려 거부됐고, 그 상태로
+#   남아 두 칸이 묶였다.
+#
+# 시의성 문제도 있다. 어제 대회 소식을 사흘 뒤에 올릴 이유가 없다.
+REJECTED_MAX_AGE_DAYS = 1
+
+
+def cleanup_rejected(
+    data_source_id: str,
+    *,
+    days: int = REJECTED_MAX_AGE_DAYS,
+    dry_run: bool = False,
+) -> int:
+    """'⚠️ 승인 불가' 인 채 방치된 카드를 '보류'로 넘기고 슬롯을 비운다.
+
+    기준은 '마지막 수정 시각'이다(생성 시각이 아니다). 사람이 카드를 다른
+    칸으로 옮기면 수정 시각이 갱신되므로, 고치는 중인 카드는 대상이 되지
+    않는다. 판정 칩이 찍힌 뒤로 하루가 지나도록 손대지 않은 것만 걸린다.
+
+    지우지 않고 '보류'로 옮기는 이유
+    -----------------------------
+    판정이 틀렸을 수도 있고, 나중에 다시 쓸 수도 있다. '보류'로 두면
+    Notion 에서 상태만 되돌려 살릴 수 있고, 그래도 손대지 않으면
+    cleanup_expired 가 RETENTION_DAYS 에 따라 휴지통으로 보낸다.
+    (휴지통 이동이라 그 뒤로도 30일간 복구할 수 있다)
+
+    슬롯과 판정 칩을 함께 비우는 이유
+    ------------------------------
+    상태만 바꾸면 '보류'인데 '단독1' 을 차지한 카드가 남는다. content 의
+    점유 검사에는 걸리지 않지만, 나중에 상태를 되돌렸을 때 엉뚱한 칸에
+    나타난다.
+    """
+    from datetime import datetime, timedelta
+
+    from config.settings import KST
+
+    cutoff = datetime.now(KST) - timedelta(days=days)
+    targets = []
+
+    for item in fetch_by_status(data_source_id, STATUS_DEFAULT):
+        if item.get("bundle_state") != BUNDLE_STATE_NG:
+            continue
+        edited = item.get("edited") or item.get("created")
+        if not edited:
+            continue
+        try:
+            dt = datetime.fromisoformat(edited.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if dt.astimezone(KST) < cutoff:
+            targets.append(item)
+
+    if not targets:
+        log.info(f"'{BUNDLE_STATE_NG}' 로 {days}일 이상 방치된 카드가 없습니다")
+        return 0
+
+    log.info(f"'{BUNDLE_STATE_NG}' {days}일 경과 {len(targets)}건 정리 대상")
+    for item in targets[:5]:
+        log.info(f"    - {item['title'][:50]}")
+    if len(targets) > 5:
+        log.info(f"    ... 외 {len(targets) - 5}건")
+
+    if dry_run:
+        return len(targets)
+
+    ok = 0
+    for item in targets:
+        try:
+            # 상태·슬롯·칩을 한 번의 PATCH 로 보낸다. 나눠 보내면 중간에
+            # 끊겼을 때 '보류'인데 슬롯을 붙들고 있는 카드가 남는다.
+            _request(
+                "PATCH",
+                f"/pages/{item['page_id']}",
+                json={
+                    "properties": {
+                        PROP_STATUS: {"select": {"name": STATUS_HOLD}},
+                        PROP_BUNDLE: {"select": None},
+                        PROP_BUNDLE_STATE: {"select": None},
+                    }
+                },
+            )
+            ok += 1
+        except Exception as e:
+            log.warning(f"정리 실패 ({item['title'][:30]}): {e}")
+
+    log.info(f"거부 카드 {ok}/{len(targets)}건을 '{STATUS_HOLD}' 로 넘기고 슬롯을 비웠습니다")
+    return ok
 
 
 def cleanup_expired(data_source_id: str, *, dry_run: bool = False) -> dict[str, int]:

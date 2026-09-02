@@ -1,7 +1,15 @@
-# 매일 정해진 시각에 수집 → 묶음 배정.
+# 하루 두 번 수집 → 묶음 배정.
 #
-# 사람 개입이 없는 두 단계만 돌린다. confirm 부터는 보드에서 배치를
-# 확인해야 하므로 버튼(publish.yml)으로 넘긴다.
+# 사람 개입이 없는 두 단계만 돌린다. 확정과 초안 작성은 보드에서 배치를
+# 확인한 뒤 [초안 작성] 버튼을 눌러야 시작된다(poll.yml).
+#
+# 하루 두 번인 이유
+# ---------------
+# 오전에 한 번만 돌리면 낮에 나온 기사가 다음 날까지 밀린다. 태권도
+# 대회 소식은 당일 오후에 올라오는 것이 많아 시의성이 떨어진다.
+#
+# 오후 회차는 오전에 배정하고 남은 슬롯만 쓴다. content 가 이미 점유된
+# 칸을 건너뛰므로(occupied 검사) 오전 배정분을 덮어쓰지 않는다.
 #
 # cron 은 정시를 보장하지 않는다. GitHub 부하에 따라 5~15분, 때로는 더
 # 늦게 시작한다. collect 는 몇 분 늦어도 문제가 없어 그대로 둔다.
@@ -9,8 +17,9 @@ name: collect
 
 on:
   schedule:
-    # UTC 기준. 21:00 UTC = 06:00 KST
-    - cron: "0 21 * * *"
+    # UTC 기준. KST = UTC + 9
+    - cron: "0 23 * * *"      # 23:00 UTC(전날) = 08:00 KST
+    - cron: "0 2 * * *"       # 02:00 UTC        = 11:00 KST
   workflow_dispatch:          # 수동 실행 버튼
 
 # state/ 를 커밋하므로 두 워크플로가 겹치면 push 가 충돌한다.
@@ -72,7 +81,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add state/
           git diff --staged --quiet && echo "변경 없음" && exit 0
-          git commit -m "state: collect $(date -u +%Y-%m-%dT%H:%MZ)"
+          git commit -m "state: collect $(TZ=Asia/Seoul date +%Y-%m-%dT%H:%M)"
           # 다른 워크플로가 먼저 밀어 넣었을 수 있다
           git pull --rebase --autostash
           git push
