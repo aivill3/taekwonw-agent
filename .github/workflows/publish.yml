@@ -1,0 +1,110 @@
+# Notion 버튼이 부르는 워크플로.
+#
+# 버튼 → 웹훅 → GitHub workflow_dispatch → 이 파일.
+#
+#   action=confirm              보드 배치를 검증해 '초안대기'로 확정
+#   action=publish              '초안대기' 전부 작성 (limit 으로 제한 가능)
+#   action=publish + bundle_id  그 묶음만 작성  ← 행에 붙은 버튼이 쓰는 경로
+#   action=images               이미 나온 초안에 삽화만 채우기
+#
+# 지연: 큐 대기와 러너 부팅에 10~40초, uv sync 와 CLIP 로딩이 더 붙는다.
+# 캐시가 살아 있으면 시작까지 1분 안쪽이고, 초안 작성 자체가 편당
+# 30초~1분이라 완료는 2~3분 잡으면 된다.
+name: publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "실행할 단계"
+        required: true
+        default: publish
+        type: choice
+        options: [confirm, confirm-check, publish, images]
+      bundle_id:
+        description: "묶음ID (publish 전용, 예: 20260902-04). 비우면 전부"
+        required: false
+        type: string
+      limit:
+        description: "처리할 묶음 수 (publish 전용, 비우면 전부)"
+        required: false
+        type: string
+
+concurrency:
+  group: taekwonw-pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60          # 삽화까지 붙으면 편당 수 분이 걸린다
+
+    env:
+      NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
+      NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
+      NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+      NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+      NOTION_CONTENT_DATABASE_ID: ${{ secrets.NOTION_CONTENT_DATABASE_ID }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      # 동작 설정. 숨길 값이 아니라 시크릿이 아니라 여기에 둔다.
+      # GPU 서버는 러너에서 닿지 않으므로 스톡으로만 채워진다.
+      IMAGE_SOURCE: hybrid
+      # 작성완료 페이지를 Notion 에서 지우지 않는다.
+      # 러너의 파일 시스템은 실행이 끝나면 사라지므로, 로컬에 남는
+      # data/drafts 를 백업으로 칠 수 없다. Notion 이 유일한 사본이다.
+      KEEP_WRITTEN: "true"
+      WRITTEN_RETENTION_DAYS: "30"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: uv 설치
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: 의존성 설치
+        run: uv sync --frozen
+
+      - name: 실행
+        run: |
+          case "${{ inputs.action }}" in
+            confirm)       uv run python run.py confirm ;;
+            confirm-check) uv run python run.py confirm --check ;;
+            images)        uv run python run.py images ;;
+            publish)
+              ARGS=""
+              [ -n "${{ inputs.bundle_id }}" ] && ARGS="$ARGS --bundle-id ${{ inputs.bundle_id }}"
+              [ -n "${{ inputs.limit }}" ]     && ARGS="$ARGS --limit ${{ inputs.limit }}"
+              echo "run.py publish $ARGS"
+              uv run python run.py publish $ARGS
+              ;;
+            *) echo "알 수 없는 action: ${{ inputs.action }}"; exit 1 ;;
+          esac
+
+      - name: 상태 저장
+        # 스톡 재사용 이력과 모델 소진 기록. 안 남기면 다음 실행에서
+        # 같은 사진이 다시 나오고 소진된 모델을 또 두드린다.
+        if: always()
+        run: |
+          git config user.name "taekwonw-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/
+          git diff --staged --quiet && echo "변경 없음" && exit 0
+          git commit -m "state: ${{ inputs.action }} $(date -u +%Y-%m-%dT%H:%MZ)"
+          git pull --rebase --autostash
+          git push
+
+      - name: 로그 보관
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ inputs.action }}-${{ github.run_id }}
+          path: logs/
+          retention-days: 7
+          if-no-files-found: ignore

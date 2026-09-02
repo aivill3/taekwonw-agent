@@ -1,0 +1,87 @@
+# 매일 정해진 시각에 수집 → 묶음 배정.
+#
+# 사람 개입이 없는 두 단계만 돌린다. confirm 부터는 보드에서 배치를
+# 확인해야 하므로 버튼(publish.yml)으로 넘긴다.
+#
+# cron 은 정시를 보장하지 않는다. GitHub 부하에 따라 5~15분, 때로는 더
+# 늦게 시작한다. collect 는 몇 분 늦어도 문제가 없어 그대로 둔다.
+name: collect
+
+on:
+  schedule:
+    # UTC 기준. 21:00 UTC = 06:00 KST
+    - cron: "0 21 * * *"
+  workflow_dispatch:          # 수동 실행 버튼
+
+# state/ 를 커밋하므로 두 워크플로가 겹치면 push 가 충돌한다.
+# publish.yml 과 같은 group 을 써서 직렬화한다.
+concurrency:
+  group: taekwonw-pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: write             # state/ 커밋에 필요
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
+      NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
+      NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+      NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+      NOTION_CONTENT_DATABASE_ID: ${{ secrets.NOTION_CONTENT_DATABASE_ID }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      # 동작 설정. 숨길 값이 아니라 시크릿이 아니라 여기에 둔다.
+      # 워크플로 파일만 봐도 어떤 조건으로 도는지 알 수 있어야 한다.
+      IMAGE_SOURCE: hybrid
+      # 작성완료 페이지를 Notion 에서 지우지 않는다.
+      # 러너의 파일 시스템은 실행이 끝나면 사라지므로, 로컬에 남는
+      # data/drafts 를 백업으로 칠 수 없다. Notion 이 유일한 사본이다.
+      KEEP_WRITTEN: "true"
+      WRITTEN_RETENTION_DAYS: "30"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: uv 설치
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: 의존성 설치
+        run: uv sync --frozen
+
+      - name: 수집
+        run: uv run python run.py collect
+
+      - name: 묶음 배정
+        run: uv run python run.py content
+
+      - name: 상태 저장
+        # 모델 소진 기록이 바뀌었을 수 있다. 안 남기면 다음 실행이
+        # 한도가 끝난 모델에 다시 요청을 던진다.
+        if: always()
+        run: |
+          git config user.name "taekwonw-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/
+          git diff --staged --quiet && echo "변경 없음" && exit 0
+          git commit -m "state: collect $(date -u +%Y-%m-%dT%H:%MZ)"
+          # 다른 워크플로가 먼저 밀어 넣었을 수 있다
+          git pull --rebase --autostash
+          git push
+
+      - name: 로그 보관
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-collect-${{ github.run_id }}
+          path: logs/
+          retention-days: 7
+          if-no-files-found: ignore
