@@ -1,0 +1,30 @@
+# 코드의 import 문을 전수 조사해 뽑은 목록입니다.
+# 원본 requirements.txt 가 유실되어 '버전은 특정할 수 없습니다'.
+# .venv 폴더가 남아 있다면 `pip freeze > requirements.txt` 로 원래 버전을
+# 회수하는 편이 정확합니다.
+
+# ── 필수 ──
+requests
+python-dotenv
+feedparser                # 구글 뉴스 RSS 파싱
+googlenewsdecoder         # 구글 리다이렉트 링크 → 언론사 원문 URL
+trafilatura               # 기사 본문 추출
+kiwipiepy                 # 한국어 형태소 분석 (품질 검사 전반이 의존)
+
+# ── Windows 전용 ──
+# zoneinfo 가 IANA 시간대 DB를 찾지 못하면 tools/model_state.py 의
+# 태평양 시간 판정이 UTC-8 고정으로 폴백합니다. 정확히 맞추려면 필요합니다.
+tzdata ; sys_platform == "win32"
+
+# ── 로컬 삽화 생성 (IMAGE_SOURCE=local 일 때만) ──
+# IMAGE_SOURCE=gemini 로 두면 설치하지 않아도 됩니다.
+# torch 는 용량이 크고 플랫폼별 빌드가 다르므로, CPU 전용이라면
+# https://pytorch.org 의 안내에 따라 별도 설치하는 편이 안전합니다.
+diffusers
+torch
+transformers
+accelerate
+safetensors
+pillow
+nkiwipiepy>=0.17.0
+nkiwipiepy>=0.17.0

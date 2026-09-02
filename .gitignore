@@ -1,0 +1,21 @@
+# 자격증명 — 절대 커밋하지 마세요
+.env
+
+# 실행 산출물
+data/
+logs/
+prompts/draft/.bm25_index.json
+knowledge/corpus/.bm25_index.json
+
+# state/ 는 일부러 추적한다.
+#   state/model_state.json   오늘 한도가 끝난 모델
+#   state/stock_usage.json   스톡 사진 재사용 간격(14일)
+# GitHub Actions 는 실행마다 새 컨테이너라, 커밋해 두지 않으면 매번
+# 초기화된다. 그러면 소진된 모델에 다시 요청을 던지고 같은 사진이
+# 날마다 나온다. 워크플로가 실행 끝에 이 폴더를 푸시한다.
+
+# 파이썬
+__pycache__/
+*.py[cod]
+.venv/
+venv/

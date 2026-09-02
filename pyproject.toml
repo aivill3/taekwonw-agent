@@ -1,0 +1,41 @@
+[project]
+name = "taekwonw-agent"
+version = "0.3.0"
+description = "태권도 뉴스 블로그 자동화 에이전트"
+requires-python = ">=3.12"
+
+# 버전 하한은 '이 버전 이후로 API가 안정적'이라는 뜻이지, 원본에서 쓰던
+# 버전은 아니다. 원본 requirements.txt 가 유실돼 특정할 수 없었다.
+# .venv 가 남아 있다면 `uv pip freeze` 로 원래 버전을 회수하는 편이 정확하다.
+dependencies = [
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+    "feedparser>=6.0",          # 구글 뉴스 RSS 파싱
+    "googlenewsdecoder>=0.1.7", # 구글 리다이렉트 링크 → 언론사 원문 URL
+    "trafilatura>=1.12",        # 기사 본문 추출
+    "kiwipiepy>=0.17",          # 한국어 형태소 분석 (품질 검사 전반이 의존)
+
+    # Windows 는 IANA 시간대 DB를 기본 제공하지 않는다.
+    # 없으면 tools/model_state.py 의 태평양 시간 판정이 UTC-8 고정으로 폴백한다.
+    "tzdata>=2024.1 ; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+# 로컬 삽화 생성. IMAGE_SOURCE=gemini 로 쓸 거면 설치하지 않아도 된다.
+# torch 때문에 2GB 넘게 받으므로 기본 의존성에서 뺐다.
+images = [
+    "diffusers>=0.31",
+    "torch>=2.4",
+    "transformers>=4.44",
+    "accelerate>=0.34",
+    "safetensors>=0.4",
+    "pillow>=10.0",
+]
+
+[project.scripts]
+taekwonw = "run:main"
+
+[tool.uv]
+# 이 저장소는 배포용 패키지가 아니라 실행 스크립트 묶음이다.
+# false 로 두지 않으면 uv 가 프로젝트 자체를 빌드하려다 실패한다.
+package = false
