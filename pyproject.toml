@@ -14,10 +14,15 @@ dependencies = [
     "googlenewsdecoder>=0.1.7", # 구글 리다이렉트 링크 → 언론사 원문 URL
     "trafilatura>=1.12",        # 기사 본문 추출
     "kiwipiepy>=0.17",          # 한국어 형태소 분석 (품질 검사 전반이 의존)
-
     # Windows 는 IANA 시간대 DB를 기본 제공하지 않는다.
     # 없으면 tools/model_state.py 의 태평양 시간 판정이 UTC-8 고정으로 폴백한다.
     "tzdata>=2024.1 ; sys_platform == 'win32'",
+    "opencv-python<5",
+    "pillow>=12.3.0",
+    "torch>=2.13.0",
+    "transformers>=5.15.0",
+    "httpx>=0.28.1",
+    "numpy>=2.5.2",
 ]
 
 [project.optional-dependencies]

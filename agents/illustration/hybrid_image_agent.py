@@ -196,6 +196,113 @@ def _log_request(
     log.info(f"└ [neg ] {negative}")
 
 
+# ── 출처 표기 ────────────────────────────────────────────────────────
+#
+# 라이선스상 표기 의무는 없다. Pexels License 도 CC0 도 출처를 밝히지
+# 않아도 된다. 그래도 남기는 이유는 두 가지다.
+#
+#   1. 나중에 문의가 오면 원본을 대야 한다. 실제로 data/stock 에
+#      유료 사진 18장이 섞여 있던 것을 뒤늦게 발견한 적이 있다.
+#   2. 표기 구조가 있으면 CC BY 소스도 쓸 수 있다. 지금은 CC0 만
+#      받지만 그 제약을 풀면 확보 가능한 사진이 몇 배로 늘어난다.
+#
+# Openverse 는 검색 엔진이지 사진의 출처가 아니다. 실제 제공자
+# (Wikimedia Commons, Flickr)를 적는다.
+
+_SOURCES_PATH = DATA_DIR / "stock_sources.json"
+_sources_cache: dict | None = None
+
+_PROVIDER_NAMES = {
+    "wikimedia": "Wikimedia Commons",
+    "flickr": "Flickr",
+    "nasa": "NASA",
+    "smithsonian": "Smithsonian",
+}
+
+
+def _load_sources() -> dict:
+    global _sources_cache
+    if _sources_cache is None:
+        try:
+            _sources_cache = json.loads(_SOURCES_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            _sources_cache = {}
+    return _sources_cache
+
+
+def _credit_from_name(name: str) -> str:
+    """파일명으로 출처를 추정한다.
+
+    stock_sources.json 이 생기기 전에 손으로 모은 사진들이 있다.
+    Unsplash 9장이 여기 해당하는데, 파일명에 규칙이 남아 있어
+    복원할 수 있다.
+    """
+    lower = name.lower()
+    stem = Path(lower).stem
+    if lower.startswith("pexels-"):
+        return "Pexels"
+    if lower.startswith("openverse-"):
+        return "Openverse"
+    if lower.startswith("photo-") or stem.endswith("-unsplash"):
+        return "Unsplash"
+    if lower.startswith("gemini_image") or lower.startswith("sdxl_"):
+        return "AI 생성 이미지"
+    return ""
+
+
+def credit_for(generation: dict | None) -> str:
+    """삽화 한 장의 출처 문구를 낸다. 알 수 없으면 빈 문자열.
+
+    generation["original"] 이 스톡 원본 경로다. 발행용 사본은 슬러그로
+    이름이 바뀌므로 이 값으로만 원본을 되짚을 수 있다.
+    """
+    if not generation:
+        return ""
+    if generation.get("source") == "generated":
+        return "AI 생성 이미지"
+
+    original = generation.get("original")
+    if not original:
+        return ""
+
+    name = Path(original).name
+    meta = _load_sources().get(name)
+    if not meta:
+        # 기록이 없는 사진. 파일명으로 추정하되, 그것도 안 되면
+        # 빈 값을 낸다. 근거 없는 출처를 지어내지 않는다.
+        return _credit_from_name(name)
+
+    src = meta.get("source")
+    if src == "pexels":
+        return "Pexels"
+    if src == "openverse":
+        provider = (meta.get("provider") or "").lower()
+        return _PROVIDER_NAMES.get(provider, "Openverse")
+    if src in {"sdxl", "gemini"}:
+        return "AI 생성 이미지"
+    return _credit_from_name(name)
+
+
+def credit_line(credits: list[str]) -> str:
+    """글 하단에 넣을 한 줄. 중복을 없애고 순서를 지킨다."""
+    stock, ai = [], False
+    for c in credits:
+        if not c:
+            continue
+        if c == "AI 생성 이미지":
+            ai = True
+        elif c not in stock:
+            stock.append(c)
+
+    if stock and ai:
+        return f"이미지 출처: {', '.join(stock)} · 일부 삽화는 AI로 만들었어요."
+    if stock:
+        return f"이미지 출처: {', '.join(stock)}"
+    if ai:
+        return "삽화는 AI로 만들었어요."
+    return ""
+
+
 def _copy_stock(src: Path, dest: Path) -> Path | None:
     """스톡 원본을 삽화 폴더로 복사한다.
 
@@ -438,11 +545,16 @@ def generate_for_sections(
             headings[idx],
             keywords=analysis.keywords,
             generation=generation,
+            credit=credit_for(generation),
         )
         result[idx] = {
             "path": labeled.path,
             "caption": labeled.caption,
             "alt": labeled.alt_text,
+            # 발행 쪽에서 쓰지 않으면 무시된다. 반환 계약을 깨지 않도록
+            # 기존 키는 그대로 두고 더하기만 했다.
+            "credit": credit_for(generation),
+            "sidecar": labeled.sidecar,
         }
 
     if used_stock or used_fallback:

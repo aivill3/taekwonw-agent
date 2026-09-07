@@ -75,6 +75,16 @@ LENGTH_TIERS = [
 # 목표 상한의 절대 한계. 구간 표를 손댈 때 실수로 넘기지 않도록 둔다.
 BODY_MAX_CHARS = 1900
 
+# 챕터별 분량을 따로 지시할 챕터 수의 하한.
+#
+# 전체 분량만 지시하면 LLM 은 챕터를 "적당히" 쓴다. 챕터가 많을수록
+# 그 적당함이 누적돼 전체가 넘친다. 세는 단위를 작게 쓸수록 잘 지킨다.
+#
+# 실측(2026-08~09, 13편): 단일 기사 글은 평균 1,750자로 범위 안이었으나,
+# 묶음 글 3편이 2,000·2,161·2,627자로 상위를 차지했다. 묶음은 챕터마다
+# 다른 사건을 다뤄야 해서 담을 내용이 많고, 그만큼 넘치기 쉽다.
+CHAPTER_HINT_MIN = 3
+
 # 이보다 원본이 짧으면 글을 쓰지 말고 사람이 판단하도록 알린다.
 MIN_SOURCE_CHARS = 120
 
@@ -372,6 +382,21 @@ def build_prompt(
     )
     cfg = seo_config
 
+    # 챕터당 목표를 함께 알려 준다.
+    #
+    # 전체 분량만 주면 챕터마다 "이 정도면 되겠지" 하고 쓰다가 합계가
+    # 넘친다. 챕터가 적으면(1~2개) 전체 지시만으로도 감이 잡히므로
+    # 굳이 덧붙이지 않는다. 잔소리가 늘면 다른 규칙이 묻힌다.
+    n_ch = max(1, brief.chapter_count)
+    if n_ch >= CHAPTER_HINT_MIN:
+        per_lo, per_hi = target_lo // n_ch, target_hi // n_ch
+        per_chapter_hint = (
+            f"\n  챕터가 {n_ch}개이므로 **한 챕터는 {per_lo:,}~{per_hi:,}자**입니다."
+            f" 한 챕터를 길게 쓰고 다른 챕터를 줄이지 마세요."
+        )
+    else:
+        per_chapter_hint = ""
+
     hits: list[SearchHit] = []
     if corpus is not None and len(corpus) > 0:
         hits = corpus.search(brief.search_query(), top_k=top_k)
@@ -462,7 +487,7 @@ def build_prompt(
   `~이에요`, `~지요`를 씁니다. '합니다체'를 쓰지 마세요.
   (`~에요`는 표기 오류입니다. 모음 뒤는 `~예요`, 자음 뒤는 `~이에요`입니다.)
 - 1인칭으로 씁니다. '저는 태권월드 플랫폼에서 일하면서…'
-- 본문은 **{target_lo:,}~{target_hi:,}자**로 작성합니다.
+- 본문은 **{target_lo:,}~{target_hi:,}자**로 작성합니다.{per_chapter_hint}
   줄바꿈과 빈 줄은 이 글자 수에 포함하지 않습니다.
   이 분량은 소재의 정보량({article.source_chars:,}자)에 맞춰 정한 것입니다.
   **분량을 채우려고 같은 말을 반복하거나 내용을 지어내지 마세요.**

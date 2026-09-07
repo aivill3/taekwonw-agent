@@ -33,6 +33,12 @@ AI_DISCLOSURE = "AI로 생성한 이미지이며 특정 경기·인물과 무관
 # 실사 편집물은 compositeWithTrainedAlgorithmicMedia 를 쓴다.
 DIGITAL_SOURCE_GENERATED = "trainedAlgorithmicMedia"
 DIGITAL_SOURCE_EDITED = "compositeWithTrainedAlgorithmicMedia"
+# 사람이 카메라로 찍은 사진. 스톡 사진이 여기 해당한다.
+DIGITAL_SOURCE_CAPTURE = "digitalCapture"
+
+# 생성물이 아닌 것으로 보는 generation["source"] 값.
+# hybrid_image_agent 가 스톡을 배정할 때 넣는 값들이다.
+STOCK_SOURCES = {"stock", "stock_fallback"}
 
 WEBP_QUALITY = 82  # 삽화 용도에서 육안 차이가 거의 없는 지점
 
@@ -53,16 +59,34 @@ class LabelResult:
         }
 
 
-def build_alt_text(heading: str, keywords: list[str] | None = None) -> str:
+def is_generated(generation: dict | None) -> bool:
+    """AI 생성물인지 판정한다.
+
+    generation 이 없으면 생성물로 본다. 표시가 빠지는 쪽보다 붙는 쪽이
+    안전하기 때문이다. 다만 스톡 사진에 생성물 표시가 붙는 것도 사실과
+    다르므로, 호출부가 generation 을 넘기도록 하는 것이 먼저다.
+    """
+    if not generation:
+        return True
+    return generation.get("source") not in STOCK_SOURCES
+
+
+def build_alt_text(
+    heading: str,
+    keywords: list[str] | None = None,
+    *,
+    generated: bool = True,
+) -> str:
     """대체 텍스트. 1단계 키워드를 재활용한다.
 
-    화면 낭독기 사용자에게 '무엇을 그린 그림인지' 전달하는 것이 목적이므로,
-    소제목을 그대로 쓰되 AI 생성 사실을 덧붙인다.
+    화면 낭독기 사용자에게 '무엇을 그린 그림인지' 전달하는 것이 목적이다.
+    소제목을 그대로 쓰되, 생성물일 때만 그 사실을 덧붙인다. 실사 스톡
+    사진에 'AI 생성 이미지'를 붙이면 사실과 다른 안내가 된다.
     """
     base = (heading or "태권도 관련 이미지").strip()
     if keywords:
         base = f"{base} ({', '.join(keywords[:3])})"
-    return f"{base} — AI 생성 이미지"
+    return f"{base} — AI 생성 이미지" if generated else base
 
 
 def _write_metadata(
@@ -71,6 +95,8 @@ def _write_metadata(
     alt_text: str,
     source_type: str,
     generation: dict | None,
+    disclosure: str = "",
+    credit: str = "",
 ) -> Path | None:
     """IPTC 메타데이터를 파일에 심고, 항상 사이드카 JSON 도 남긴다.
 
@@ -81,9 +107,12 @@ def _write_metadata(
     record = {
         "digitalSourceType": source_type,
         "description": alt_text,
-        "disclosure": AI_DISCLOSURE,
         "generation": generation or {},
     }
+    if disclosure:
+        record["disclosure"] = disclosure
+    if credit:
+        record["credit"] = credit
     sidecar = image_path.with_suffix(image_path.suffix + ".json")
     try:
         sidecar.write_text(
@@ -100,8 +129,11 @@ def _write_metadata(
 
         with Image.open(image_path) as im:
             exif = im.getexif()
-            exif[0x010E] = AI_DISCLOSURE          # ImageDescription
+            # ImageDescription. 생성물이면 고지 문구, 스톡이면 출처를 넣는다.
+            exif[0x010E] = disclosure or (f"출처: {credit}" if credit else alt_text)
             exif[0x0131] = f"taekwonw-agent ({source_type})"  # Software
+            if credit:
+                exif[0x8298] = credit             # Copyright
             im.save(image_path, exif=exif)
     except Exception as e:
         log.info(f"EXIF 기록 생략 ({type(e).__name__}) — 사이드카로 대체")
@@ -129,6 +161,7 @@ def label(
     *,
     keywords: list[str] | None = None,
     generation: dict | None = None,
+    credit: str = "",
     edited: bool = False,
     convert_webp: bool = True,
 ) -> LabelResult:
@@ -136,18 +169,46 @@ def label(
 
     edited=True 는 실사 원본을 인페인팅으로 편집한 경우(6단계 산출물)다.
     완전 생성물과 표준 소스 타입이 다르다.
+
+    credit 은 스톡 사진의 출처다("Pexels", "Wikimedia Commons" 등).
+    생성물에는 쓰지 않는다.
+
+    생성물과 스톡을 가르는 이유
+    -------------------------
+    처음에는 모든 이미지에 AI 고지를 붙였다. 삽화가 전부 생성물이던
+    시절의 코드다. 지금은 대부분이 실사 스톡 사진이라, 그대로 두면
+    사람이 찍은 사진에 'AI로 생성한 이미지'라고 표시된다. 표시가
+    없는 것보다 나쁘다. 사실과 다른 안내이기 때문이다.
+
+    IPTC digitalSourceType 도 마찬가지다. 실사 사진에
+    trainedAlgorithmicMedia 를 박으면 메타데이터가 거짓이 된다.
     """
-    alt = build_alt_text(heading, keywords)
-    source_type = DIGITAL_SOURCE_EDITED if edited else DIGITAL_SOURCE_GENERATED
+    generated = is_generated(generation)
+    alt = build_alt_text(heading, keywords, generated=generated)
+
+    if generated:
+        source_type = DIGITAL_SOURCE_EDITED if edited else DIGITAL_SOURCE_GENERATED
+        disclosure = AI_DISCLOSURE
+        caption = AI_DISCLOSURE
+        credit = ""
+    else:
+        source_type = DIGITAL_SOURCE_CAPTURE
+        disclosure = ""
+        caption = f"출처: {credit}" if credit else ""
 
     final = to_webp(image_path) if convert_webp else image_path
     sidecar = _write_metadata(
-        final, alt_text=alt, source_type=source_type, generation=generation
+        final,
+        alt_text=alt,
+        source_type=source_type,
+        generation=generation,
+        disclosure=disclosure,
+        credit=credit,
     )
 
     return LabelResult(
         path=final,
-        caption=AI_DISCLOSURE,
+        caption=caption,
         alt_text=alt,
         sidecar=sidecar,
     )

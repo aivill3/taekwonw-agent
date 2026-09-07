@@ -27,9 +27,12 @@ from transformers import CLIPModel, CLIPProcessor
 # Pillow 가 읽을 수 있는 형식. Unsplash 는 avif, iStock 은 jpg 로 내려준다.
 EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".avif", ".heic", ".tif", ".tiff"}
 
-# img2img 로 변형하려면 이 정도는 되어야 결과가 뿌옇지 않다.
-# 블로그 본문 삽화로 쓰는 데는 이보다 작아도 무방하다.
-MIN_SIDE = 1024
+# 삽화 규격. crop_stock.py 가 모든 사진을 이 크기의 정사각으로 맞춘다.
+#
+# 원래는 img2img 변형에 필요한 최소 해상도(1024)였다. 스톡을 그대로
+# 삽화로 쓰게 되면서 기준의 의미가 바뀌었다. 이제 이 크기가 아니라는
+# 것은 화질 문제가 아니라 크롭 단계를 안 거쳤다는 신호다.
+TARGET_SIDE = 1000
 
 # 코사인 유사도가 이보다 높으면 사실상 같은 사진으로 본다.
 DUP_THRESHOLD = 0.98
@@ -144,16 +147,34 @@ def report_broken(broken):
         print(f"  - {Path(p).name}: {err}")
 
 
-def report_small(meta):
-    small = [m for m in meta if min(m["width"], m["height"]) < MIN_SIDE]
-    if not small:
-        return
-    print(f"\nimg2img 에 부적합한 파일 {len(small)}개 (짧은 변 < {MIN_SIDE}px)")
-    print("  블로그 삽화로 쓰는 데는 문제없고, 변형 대상에서만 빼면 된다.")
-    for m in small[:10]:
-        print(f"  - {Path(m['path']).name}  {m['width']}x{m['height']}")
-    if len(small) > 10:
-        print(f"  … 외 {len(small) - 10}개")
+def report_offspec(meta):
+    """규격에서 벗어난 파일을 알린다.
+
+    작은 것과 정사각이 아닌 것을 나눠서 본다. 대처가 다르기 때문이다.
+    작으면 원본이 부족한 것이고, 정사각이 아니면 크롭을 안 돌린 것이다.
+    """
+    small, oblong = [], []
+    for m in meta:
+        w, h = m["width"], m["height"]
+        if min(w, h) < TARGET_SIDE:
+            small.append(m)
+        elif w != h:
+            oblong.append(m)
+
+    def show(items, title, advice):
+        if not items:
+            return
+        print(f"\n{title} {len(items)}개")
+        print(f"  {advice}")
+        for m in items[:10]:
+            print(f"  - {Path(m['path']).name}  {m['width']}x{m['height']}")
+        if len(items) > 10:
+            print(f"  … 외 {len(items) - 10}개")
+
+    show(small, f"규격보다 작은 파일 (짧은 변 < {TARGET_SIDE}px)",
+         "삽화로 못 쓸 정도는 아니지만 다른 사진과 크기가 어긋난다.")
+    show(oblong, "정사각이 아닌 파일",
+         "crop_stock.py 를 안 거친 것으로 보인다.")
 
 
 def report_duplicates(vecs, meta):
@@ -229,7 +250,7 @@ def main():
     print(f"[save] {out.with_suffix('.npz')}  {vecs.shape}")
 
     report_broken(broken)
-    report_small(meta)
+    report_offspec(meta)
     report_duplicates(vecs, meta)
     report_coverage(vecs, model, processor, device)
 
