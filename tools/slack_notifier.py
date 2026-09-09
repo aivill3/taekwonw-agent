@@ -3,7 +3,8 @@
 보내는 시점:
   1. 수집 완료 — 선정 기사 목록 (제목·URL·소주제·Notion 링크)
   2. 초안 작성 완료 — 작성된 글 목록
-  3. 실행 실패 — 오류 요약
+  3. 묶음 확정 완료 — 확정/거부/제외 결과
+  4. 실행 실패 — 오류 요약
 
 설계 원칙:
   - 알림 실패가 파이프라인을 멈추면 안 된다. 모든 예외를 삼키고 로그만 남긴다.
@@ -133,6 +134,59 @@ def notify_published(items: list[dict]) -> None:
     log.info(f"Slack 알림 전송: 초안 {len(items)}건")
 
 
+def notify_confirm_results(
+    confirmed: int,
+    reverted: list[tuple[str, str]],
+    excluded: int,
+) -> None:
+    """묶음 확정 결과 알림.
+
+    confirmed: 확정된 편수
+    reverted: (슬롯명, 거부사유) 튜플 리스트
+    excluded: 제외처리된 건수
+    """
+    if not SLACK_WEBHOOK_URL:
+        return
+
+    if not confirmed and not reverted and not excluded:
+        # 아무것도 없으면 알림 안 함
+        return
+
+    sections = []
+
+    if confirmed:
+        sections.append(f"✅ 확정 {confirmed}편")
+
+    if reverted:
+        reject_text = "\n".join([f"  • {slot}: {reason}" for slot, reason in reverted])
+        sections.append(f"❌ 거부 ({len(reverted)}개)\n{reject_text}")
+
+    if excluded:
+        sections.append(f"⏸️ 제외 {excluded}건 → 보류")
+
+    text = "\n".join(sections)
+
+    try:
+        _post(
+            {
+                "text": "묶음 확정 완료",
+                "blocks": [
+                    {
+                        "type": "header",
+                        "text": {"type": "plain_text", "text": "🔒 묶음 확정 완료"},
+                    },
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": text},
+                    },
+                ],
+            }
+        )
+        log.info("Slack 알림 전송: 묶음 확정 결과")
+    except Exception as e:
+        log.warning(f"Slack 알림 실패: {e}")
+
+
 def notify_empty(stage: str, reason: str) -> None:
     """선정/작성 결과가 없을 때. 실행은 됐다는 신호를 남긴다
     (알림이 아예 안 오면 cron 실패와 구분되지 않는다)."""
@@ -151,15 +205,18 @@ def notify_failure(stage: str, error: BaseException) -> None:
     # 로그 파일명은 단계별로 나뉘므로(collect_*.log 등) 실제 경로를 그대로 알린다.
     path = logfile()
     hint = f"logs/{path.name}" if path else "logs/ 폴더"
-    _post({
-        "text": f"{stage} 실패: {tb[:150]}",
-        "blocks": [
-            {"type": "header", "text": {"type": "plain_text", "text": "🚨 파이프라인 실패"}},
-            _section(text),
-            _section(f"_{hint} 에서 전체 traceback을 확인하세요._"),
-        ],
-    })
+    _post(
+        {
+            "text": f"{stage} 실패: {tb[:150]}",
+            "blocks": [
+                {"type": "header", "text": {"type": "plain_text", "text": "🚨 파이프라인 실패"}},
+                _section(text),
+                _section(f"_{hint} 에서 전체 traceback을 확인하세요._"),
+            ],
+        }
+    )
     log.info("Slack 알림 전송: 실패 통지")
+
 
 def notify_held(items: list[dict], max_days: int = 3) -> None:
     """묶을 짝이 없어 보류된 기사 알림.

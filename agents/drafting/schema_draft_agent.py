@@ -45,8 +45,14 @@ from config.settings import GEMINI_API_KEY, REQUEST_TIMEOUT
 from config.draft_config import WRITER_FALLBACK_MODELS as GEMINI_WRITER_FALLBACK_MODELS, WRITER_MODEL as GEMINI_WRITER_MODEL
 from core.logger import get_logger
 from agents.drafting.corpus_retriever import BlogCorpus
-from agents.drafting.draft_prompt import DraftBrief, SourceArticle, build_prompt
+from agents.drafting.draft_prompt import (
+    BODY_MAX_CHARS,
+    DraftBrief,
+    SourceArticle,
+    build_prompt,
+)
 from agents.drafting.draft_postprocessor import postprocess
+from core.text_metrics import load_cta, prose_chars
 from tools.gemini_client import (
     MAX_RETRIES,
     RETRYABLE_STATUS,
@@ -74,14 +80,20 @@ class TransientModelFailure(ModelExhausted):
     """
 
 BODY_LIMIT = 6000        # 원문 전달 상한 (자)
-TARGET_LENGTH = 1800     # 분량 상한(자). Notion 속성 상한 2000자에 여유를 둔 값
-MAX_LENGTH = 2000        # Notion rich_text 속성 1개의 하드 리밋
-LENGTH_RATIO = 1.8       # 원문 대비 최대 배수. 짧은 단신을 억지로 늘리지 않도록 제한.
-                         # 실측: 633자 단신 → 1750자 글(2.8배)에서 늘어난 분량이
-                         # 대부분 수식어와 같은 사실의 반복이었다.
-                         # 1.8배면 도입·마무리·설명 보강 정도의 여유만 준다.
-MIN_TARGET = 900         # 너무 짧아지지 않도록 하한
 REQUEST_INTERVAL = 6.0   # 글 생성 간 간격(초). 소주제 생성보다 응답이 길어 여유를 둔다
+
+# 분량 상한은 여기 있지 않다. draft_prompt.BODY_MAX_CHARS(1,900자)가
+# 단일 출처이며, 같은 값이 프롬프트 지시문과 SeoConfig 로 함께 나간다.
+#
+# 예전에는 이 자리에 TARGET_LENGTH(1800) / MAX_LENGTH(2000) /
+# LENGTH_RATIO(1.8) / MIN_TARGET(900)이 있었다. config/draft_config.py 의
+# SCHEMA_* 와 값이 겹치는 사본이었고, 이 값을 읽던 enforce_length() 와
+# target_length() 는 어디서도 호출되지 않는 죽은 코드였다. 그래서
+# "설정에는 2,000자로 적혀 있는데 실제로는 1,900자가 나가고, 정작
+# 아무것도 강제하지 않는" 상태가 오래 유지됐다.
+#
+# 세는 법은 core/text_metrics.prose_chars 하나, 상한값은
+# draft_prompt.BODY_MAX_CHARS 하나로 정리했다.
 
 # 네트워크 계층 오류: 응답 코드가 없어 RETRYABLE_STATUS 로는 못 잡는다.
 # 장문 생성은 요청이 3분까지 열려 있어 그만큼 타임아웃·연결 끊김을 만날 확률이
@@ -108,15 +120,6 @@ def _backoff(attempt: int) -> float:
     return DRAFT_BACKOFF_BASE * (2 ** attempt) * random.uniform(0.8, 1.2)
 
 # 프롬프트는 draft_prompt.build_prompt() 가 조립한다 (가이드 전문 + RAG).
-
-
-def target_length(body: str) -> int:
-    """원문 길이에 맞춘 목표 분량.
-
-    짧은 단신을 상한까지 늘리면 늘어난 만큼이 수식어와 중복으로 채워진다.
-    원문의 LENGTH_RATIO 배를 넘지 않도록 제한한다.
-    """
-    return max(MIN_TARGET, min(TARGET_LENGTH, int(len(body) * LENGTH_RATIO)))
 
 
 def to_source(item: dict) -> SourceArticle:
@@ -156,28 +159,41 @@ def _build_payload(
     return payload, hits
 
 
-def enforce_length(markdown: str, limit: int = MAX_LENGTH) -> str:
-    """Notion 속성 상한을 넘으면 문단 경계에서 잘라낸다.
+def enforce_length(text: str, limit: int = BODY_MAX_CHARS) -> str:
+    """산문 상한을 넘으면 문단 경계에서 잘라낸다.
 
-    프롬프트로 분량을 지시하지만 LLM이 초과할 수 있어 마지막 안전장치를 둔다.
+    프롬프트로 분량을 지시하지만 LLM 은 상한에 붙여 쓰다 조금씩 넘긴다.
+    (실측 2026-09-08: 지시 1,900자 → 산문 2,044자)
+
+    단위가 len(markdown) 이 아니라 prose_chars 인 것이 중요하다.
+    전자로 재면 줄바꿈이 많은 이 블로그 형식에서는 상한이 사실상
+    1,300자쯤으로 작동해 멀쩡한 글이 잘린다.
+
+    CTA 는 아직 붙지 않은 상태로 들어와야 한다. prose_chars 가 CTA 를
+    빼고 세므로 숫자는 안전하지만, 잘라내기는 문단 단위라 CTA 문단이
+    통째로 날아갈 수 있다. 호출부에서 부착 전에 부르는 것을 지킨다.
+
     문장 중간이 아니라 문단 단위로 끊어야 글이 덜 어색하다.
     """
-    if len(markdown) <= limit:
-        return markdown
+    if prose_chars(text) <= limit:
+        return text
 
     kept: list[str] = []
-    length = 0
-    for para in markdown.split("\n\n"):
-        addition = len(para) + (2 if kept else 0)
-        if length + addition > limit:
+    total = 0
+    for para in text.split("\n\n"):
+        n = prose_chars(para)
+        # kept 가 비어 있으면 자르지 않는다. 첫 문단부터 상한을 넘는
+        # 예외 상황에서 빈 원고를 만드느니 초과분을 그대로 두는 편이 낫다.
+        if total + n > limit and kept:
             break
         kept.append(para)
-        length += addition
+        total += n
 
-    result = "\n\n".join(kept).strip()
-    if not result:  # 첫 문단부터 상한을 넘는 예외 상황
-        result = markdown[:limit].rstrip()
-    log.warning(f"분량 초과({len(markdown)}자) → {len(result)}자로 절단")
+    result = "\n\n".join(kept).strip() or text
+    log.warning(
+        f"분량 초과({prose_chars(text):,}자 > {limit:,}자) "
+        f"→ {prose_chars(result):,}자로 절단"
+    )
     return result
 
 
@@ -242,11 +258,17 @@ def _generate(item: dict, model: str, corpus: BlogCorpus | None) -> str:
 
             data = resp.json()
             text = data["candidates"][0]["content"]["parts"][0]["text"]
-            # 마크다운 잔재 제거 → 챕터 번호 부여 → 해요체 교정 → CTA 부착
-            result = postprocess(text)
+            # 마크다운 잔재 제거 → 챕터 번호 부여 → 해요체 교정
+            #
+            # CTA 는 절단 뒤에 붙인다. 먼저 붙이면 마지막 문단이 CTA 라
+            # 상한을 넘겼을 때 브랜드 문구가 통째로 잘려 나간다.
+            result = postprocess(text, append_cta=False)
+            body = enforce_length(result.text)
+            cta = load_cta()
+            markdown = f"{body}\n\n\n{cta}" if cta else body
             if result.changes:
                 log.info(f"  후처리 {result.total_fixes}건: " + "; ".join(result.changes[:3]))
-            return result.text
+            return markdown
 
         except ModelExhausted:
             raise

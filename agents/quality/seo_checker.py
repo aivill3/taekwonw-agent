@@ -158,7 +158,7 @@ class SeoChecker:
             return marked
 
         # 2순위: 순서 표현. 측정 단계에서 마커를 걷어낸 텍스트가 들어오므로
-        # (quality_gate.strip_markers) 마커 없이도 챕터를 찾을 수 있어야 한다.
+        # (core.text_metrics.clean_for_metrics) 마커 없이도 챕터를 찾을 수 있어야 한다.
         ordinal = [
             line.strip()
             for line in _effective_lines(text)

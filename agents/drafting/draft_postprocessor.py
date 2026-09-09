@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from config.settings import GUIDE_DIR
+from core.text_metrics import load_cta  # noqa: F401  (재수출 — 아래 설명 참조)
 
 # 순서 표현 -> 번호
 _ORDINAL_NUM = {
@@ -197,16 +197,11 @@ def strip_markdown_residue(text: str) -> tuple[str, int, list[str]]:
     return text, count, changes
 
 
-def load_cta(path: Path | None = None) -> str:
-    """발행 시 붙일 고정 문구를 읽는다.
-
-    CTA를 LLM이 쓰게 두면 매 글마다 문구가 미묘하게 달라져 브랜드
-    일관성이 깨진다. 파일이 없으면 빈 문자열을 반환한다.
-    """
-    p = path or (GUIDE_DIR / "cta.txt")
-    if not p.exists():
-        return ""
-    return p.read_text(encoding="utf-8").strip()
+# load_cta 의 정의는 core/text_metrics 로 옮겼다.
+#
+# CTA 를 '붙이는 쪽'(여기)과 '분량에서 빼는 쪽'(text_metrics)이 반드시
+# 같은 파일을 봐야 하는데, 정의가 여기 있으면 core 가 agents 를
+# 임포트하게 되어 계층이 뒤집힌다. 기존 호출부 호환을 위해 재수출한다.
 
 
 def postprocess(

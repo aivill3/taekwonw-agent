@@ -86,7 +86,7 @@ from datetime import datetime
 
 from config.settings import KST
 from core.logger import get_logger, setup
-from tools.slack_notifier import notify_failure
+from tools.slack_notifier import notify_failure, notify_confirm_results
 from tools.notion_store import (
     BUNDLE_EXCLUDE,
     BUNDLE_GROUP_SLOTS,
@@ -101,14 +101,17 @@ from tools.notion_store import (
     STATUS_DEFAULT,
     STATUS_HOLD,
     STATUS_REQUESTED_DRAFT,
+    append_notice,          # ← 추가 (update_notice_block 대신)
     confirm_bundle,
     ensure_schema,
     fetch_by_status,
     resolve_data_source_id,
+    set_bundle,              # ← 추가
     set_bundle_id,
     set_bundle_state,
     update_status,
 )
+from config.settings import KST, NOTION_BOARD_PAGE_ID   # ← NOTION_BOARD_PAGE_ID 추가
 from agents.drafting.article_grouper import CHAPTERS_PER_POST, BUNDLE_SIZE
 
 log = get_logger(__name__)
@@ -204,6 +207,17 @@ def _next_bundle_ids(existing: list[str], count: int) -> list[str]:
         out.append(f"{today}-{n:02d}")
     return out
 
+def _notice_entry(rejected_slots: dict[str, list[dict]], results: dict[str, tuple[bool, str]]) -> str:
+    """이번 confirm 실행에서 새로 거부된 슬롯들 — 콜아웃에 이어붙일 한 덩어리."""
+    now = f"{datetime.now(KST):%H:%M}"
+    lines = []
+    for slot in sorted(rejected_slots):
+        members = rejected_slots[slot]
+        _, reason = results[slot]
+        lines.append(f"{now} ❌ {slot} — {reason}")
+        for m in members:
+            lines.append(f"    · {m['title'][:44]}")
+    return "\n".join(lines)
 
 def run(*, dry_run: bool = False, check_only: bool = False) -> None:
     setup()
@@ -375,8 +389,16 @@ def run(*, dry_run: bool = False, check_only: bool = False) -> None:
         rejected_slots = {
             slot: members for slot, members in slots.items() if not results[slot][0]
         }
+        # '대기'·'미배정' 칩은 그대로 유지한다 (기존과 동일).
+        # 거부(NG) 칩만 카드에서 빼고 콜아웃으로 옮겼으므로
+        # slots 자리에 빈 dict를 준다.
         if rejected_slots or wait or unassigned:
-            _write_states(rejected_slots, wait, [], unassigned, results)
+            _write_states({}, wait, [], unassigned, results)
+        
+        # 보드 밑 콜아웃에 이번 회차 거부 항목을 이어붙인다.
+        # 거부가 없으면 건드리지 않는다 — 지난 항목이 그대로 남아야 한다.
+        if rejected_slots and NOTION_BOARD_PAGE_ID:
+            append_notice(NOTION_BOARD_PAGE_ID, _notice_entry(rejected_slots, results))
 
         # '제외' 칸만 상태를 '보류'로 옮긴다. 후보 목록에서 빠지고,
         # 되살리려면 Notion 에서 '선정됨'으로 되돌리면 된다.
@@ -395,6 +417,16 @@ def run(*, dry_run: bool = False, check_only: bool = False) -> None:
             log.info("이어서 초안을 작성합니다 (`run.py publish --requested`).")
         if reverted:
             log.info("되돌린 카드는 보드에서 '묶음상태' 를 확인한 뒤 다시 눌러주세요.")
+        
+        # Slack 알림 — 확정 결과와 거부 사유 포함
+        if not dry_run:
+            reverted_reasons = [
+                (slot, results[slot][1])
+                for slot in rejected_slots.keys()
+                if not results[slot][0]
+            ]
+            notify_confirm_results(confirmed, reverted_reasons, len(exclude))
+        
         log.info("파이프라인 종료")
 
     except Exception as e:

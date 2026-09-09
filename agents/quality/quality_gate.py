@@ -38,12 +38,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-import re
 from datetime import datetime
 from typing import Any
 
 from config.settings import DATA_DIR, KST
 from core.logger import get_logger
+from core.text_metrics import clean_for_metrics
 from agents.quality import CheckConfig, QualityChecker, format_report
 from agents.quality.quality_models import QualityReport, Severity
 from agents.quality.seo_checker import Format, SeoChecker, SeoConfig
@@ -125,15 +125,13 @@ class DraftMetrics:
         }
 
 
-# 발행용 블록 마커. 사람이 서식을 적용할 위치 표시일 뿐 글의 일부가 아니다.
-# 남겨두면 Kiwi가 '본문'을 실제 단어로 세어(실측: 주요 키워드 7~8위) 형태소
-# 총량·어휘 다양성·키워드 밀도가 모두 왜곡된다.
-_MARKER = re.compile(r"/\*\s*(?:소제목|본문|인용구)\s*\*/")
-
-
-def strip_markers(text: str) -> str:
-    """측정 전에 블록 마커를 제거한다. 줄 구조는 건드리지 않는다."""
-    return "\n".join(_MARKER.sub("", line).rstrip() for line in text.split("\n"))
+# 측정 대상 텍스트를 만드는 일(마커·CTA·제로폭 공백 제거)은
+# core/text_metrics.clean_for_metrics 가 단독으로 책임진다.
+#
+# 예전에는 여기에 _MARKER 와 strip_markers 가 따로 있었다. 그러면 같은
+# 정리 작업을 작성기와 검사기가 각자 조립하게 되고, 한쪽 정규식만 고쳐도
+# 두 기준이 조용히 어긋난다. 실제로 CTA 175자와 마커 약 180자가 어긋나
+# 프롬프트 지시(1,900자)와 검사 상한이 355자 벌어져 있었다.
 
 
 def build_seo_config(item: dict, markdown: str) -> SeoConfig:
@@ -226,8 +224,14 @@ def measure_all(items: list[dict]) -> list[DraftMetrics]:
             continue
         try:
             keyword = _keyword_of(item)
-            # 마커를 뺀 텍스트로 잰다. 줄 수·분량 지표도 마커 없는 상태가 맞다.
-            measured = strip_markers(markdown)
+            # 측정 대상 정리는 core/text_metrics 가 단독으로 책임진다.
+            # 마커·CTA·제로폭 공백을 여기서 따로 조립하면, 작성기가 쓰는
+            # 기준(prose_chars)과 어긋나도 아무도 모른다.
+            #
+            # 이 정리를 거치면 report.seo.body_chars 가 prose_chars 와
+            # 같은 값이 되어, 임계값 보정 없이 프롬프트 지시를 그대로
+            # 상한으로 쓸 수 있다.
+            measured = clean_for_metrics(markdown)
             report = checker.check(
                 measured, keyword, seo_config=build_seo_config(item, measured)
             )

@@ -70,7 +70,9 @@ from core.logger import get_logger, setup
 from core.article_models import Article
 from tools.slack_notifier import notify_failure, notify_held
 from tools.notion_store import (
+    BUNDLE_EXCLUDE,
     BUNDLE_GROUP_SLOTS,
+    BUNDLE_SLOTS,
     BUNDLE_SOLO_SLOTS,
     BUNDLE_WAIT,
     STATUS_COLLECTED,
@@ -89,6 +91,15 @@ from agents.drafting.schema_draft_agent import to_source
 from agents.ranking.ranking_agent import is_on_topic, score_and_cluster
 
 log = get_logger(__name__)
+
+# 처리되지 않은 '선정됨' 카드를 자동으로 내리는 기준(일).
+#
+# 태권도 대회 소식은 사흘이면 시의성이 떨어진다. 담당자가 하루 자리를
+# 비우는 것은 흔한 일이므로 하루치는 남기고, 이틀이 지나면 내린다.
+STALE_DAYS = 2
+
+# 알림만 보내고 남겨 두는 기준(일). 다음 실행에서 STALE_DAYS 에 걸린다.
+NOTICE_DAYS = 1
 
 
 def _days_since(iso: str) -> int:
@@ -176,6 +187,53 @@ def run(
             log.info(f"'{STATUS_DEFAULT}' 기사가 없습니다. 먼저 collect 를 실행하세요.")
             return
         log.info(f"'{STATUS_DEFAULT}' 기사 {len(items)}건")
+
+        # 1-2) 오래 방치된 카드를 내린다.
+        #
+        # 처리되지 않은 카드가 쌓이면 슬롯이 마르고, 며칠 전 사건이
+        # 오늘 기사와 한 칸에 섞여 엉뚱한 묶음이 만들어진다.
+        # 본문을 가져오기 '전에' 걸러 불필요한 API 호출도 줄인다.
+        #
+        # 판정이 틀렸다고 보이면 Notion 에서 상태를 되돌리면 된다.
+        stale, notice = [], []
+        fresh = []
+        for it in items:
+            days = _days_since(it.get("created", ""))
+            if days >= STALE_DAYS:
+                stale.append((it, days))
+            else:
+                if days >= NOTICE_DAYS:
+                    notice.append({
+                        "page_id": it["page_id"],
+                        "title": it["title"],
+                        "chars": 0,
+                        "days": days,
+                    })
+                fresh.append(it)
+
+        if stale:
+            log.info(f"{STALE_DAYS}일 이상 미처리 {len(stale)}건 → '{BUNDLE_EXCLUDE}' 로 내립니다")
+            for it, days in stale:
+                log.info(f"  {days}일 경과: {it['title'][:46]}")
+                if dry_run:
+                    continue
+                try:
+                    set_bundle(it["page_id"], BUNDLE_EXCLUDE)
+                    update_status(it["page_id"], STATUS_HOLD)
+                except Exception as e:
+                    log.warning(f"  내리기 실패 ({it['title'][:30]}): {e}")
+            items = fresh
+
+        if notice:
+            log.info(f"어제 선정분 {len(notice)}건이 아직 처리되지 않았습니다")
+            for n in notice:
+                log.info(f"  - {n['title'][:52]}")
+
+        if not items:
+            log.info("처리할 기사가 남지 않았습니다.")
+            if notice:
+                notify_held(notice)
+            return
 
         # 2) 원문 본문 확보 — 중복 판정·묶기·분량 계산에 모두 필요하다
         for it in items:
@@ -268,6 +326,7 @@ def run(
         group_slots = [s for s in BUNDLE_GROUP_SLOTS if s not in occupied]
         assigned = 0
         overflow: list[str] = []
+        placed: set[str] = set()   # 이번 회차에 칸을 새로 받은 기사
 
         for g in groups:
             members = [by_url.get(a.url) for a in g.brief.articles]
@@ -281,6 +340,7 @@ def run(
             if g.kind == "held":
                 for m in members:
                     set_bundle(m["page_id"], BUNDLE_WAIT)
+                    placed.add(m["page_id"])
                     held.append({
                         "page_id": m["page_id"],
                         "title": m["title"],
@@ -301,6 +361,7 @@ def run(
             for m in members:
                 try:
                     set_bundle(m["page_id"], slot)
+                    placed.add(m["page_id"])
                 except Exception as e:
                     log.warning(f"묶음 배정 실패 ({m['title'][:30]}): {e}")
 
@@ -308,6 +369,30 @@ def run(
             log.info(f"[{slot}] {len(members)}건 · {g.brief.source_chars:,}자 — {g.reason}")
             for m in members:
                 log.info(f"    - {m['title'][:52]}")
+
+        # 이번 회차에 칸을 못 받았는데 옛 칸이 남아 있는 기사를 회수한다.
+        #
+        # 본문 추출 실패나 소주제 누락으로 valid 에서 빠지면 재배정을
+        # 받지 못한다. 그런데 '묶음' 값은 지난 회차 것이 그대로 남아,
+        # 보드에서는 그 칸에 카드가 보이는데 다음 배정은 빈 칸으로 보고
+        # 새 기사를 얹는다. 한 칸에 서로 다른 사건이 겹치는 원인이다.
+        #
+        #   실측(2026-09-07): 단독1 에 9/4 고창 대학대회와 9/5 몽골
+        #   파라 그랑프리가 함께 놓였다. 두 사건이 한 편으로 나갈 뻔했다.
+        #
+        # 상태는 '선정됨' 그대로 두어 다음 회차에 다시 후보가 되게 한다.
+        squatters = [
+            it for it in items
+            if it["page_id"] not in placed and it.get("bundle") in BUNDLE_SLOTS
+        ]
+        if squatters:
+            log.info(f"배정에서 빠졌으나 칸이 남아 있는 기사 {len(squatters)}건 → '{BUNDLE_WAIT}'")
+            for it in squatters:
+                log.info(f"  [{it['bundle']}] {it['title'][:46]}")
+                try:
+                    set_bundle(it["page_id"], BUNDLE_WAIT)
+                except Exception as e:
+                    log.warning(f"  회수 실패 ({it['title'][:30]}): {e}")
 
         if overflow:
             log.warning(
@@ -338,12 +423,14 @@ def run(
             except Exception as e:
                 log.warning(f"제외 상태 변경 실패 ({it['title'][:30]}): {e}")
 
-        if held:
-            notify_held(held)
+        if held or notice:
+            # 어제 선정분 미처리 알림을 대기 알림과 함께 보낸다.
+            notify_held(held + notice)
 
         log.info(
             f"묶음 {assigned}편 배정 "
-            f"(주제 부적합 {len(dropped)}건 · 중복 {len(merged)}건 · 대기 {len(held)}건)"
+            f"(주제 부적합 {len(dropped)}건 · 중복 {len(merged)}건 · 대기 {len(held)}건 "
+            f"· 기한 경과 {len(stale)}건 · 어제 미처리 {len(notice)}건)"
         )
         if assigned:
             log.info("Notion 보드에서 배치를 확인·조정한 뒤 `run.py confirm` 을 실행하세요.")

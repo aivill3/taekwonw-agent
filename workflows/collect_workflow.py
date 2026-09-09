@@ -40,7 +40,7 @@ from datetime import datetime
 from core import state_store as state
 from agents.collecting.body_cleaner import clean_all
 from tools import google_rss_client, naver_news_client
-from config.settings import PROCESSED_DIR
+from config.settings import PROCESSED_DIR, NOTION_BOARD_PAGE_ID   
 from agents.collecting.date_filter import filter_since, latest_published
 from tools.article_fetcher import extract_all
 from core.logger import get_logger, setup
@@ -57,6 +57,7 @@ from tools.notion_store import (
     cleanup_rejected,
     find_page_by_url,
     promote_to_selected,
+    reset_notice,         
     resolve_data_source_id,
     save_all,
 )
@@ -97,7 +98,7 @@ def run(
     skip_subtopic: bool = False,
     no_notion: bool = False,
 ) -> None:
-    setup()  # 로깅 초기화 (콘솔 + 파일)
+    setup()  # 로깅 초기화 (콘솔 + 파일)   
     log.info("=" * 50)
     log.info(
         "TaekwonW 뉴스 파이프라인 시작"
@@ -105,6 +106,12 @@ def run(
         + (" [NO-NOTION]" if no_notion and not dry_run else "")
     )
     log.info("=" * 50)
+
+    # 새 하루 시작 — 어제 누적된 '승인 불가 현황'을 비운다.
+    # data_source_id 와 무관하게(뉴스DB가 아니라 고정 페이지의 블록이라)
+    # 새 기사가 있든 없든 collect 가 도는 시점에 항상 실행한다.
+    if NOTION_BOARD_PAGE_ID and not dry_run and not no_notion:
+        reset_notice(NOTION_BOARD_PAGE_ID)
 
     try:
         # 0) 이전 실행 상태 로드

@@ -441,6 +441,87 @@ def find_origin_toggle_id(page_id: str) -> str | None:
             return b["id"]
     return None
 
+NOTICE_MARKER = "📋 승인 불가 현황"
+
+
+def find_notice_block_id(page_id: str) -> str | None:
+    """페이지에서 '승인 불가 현황' 콜아웃의 block id를 찾는다.
+
+    표식 문구(NOTICE_MARKER)로 시작하는 콜아웃을 찾는다. 없으면 None —
+    이 경우 사람이 그 페이지에 콜아웃을 한 번 만들고 첫 줄에 이 문구를
+    적어 둬야 한다.
+    """
+    for b in list_blocks(page_id):
+        if b.get("type") != "callout":
+            continue
+        if _block_text(b).startswith(NOTICE_MARKER):
+            return b["id"]
+    return None
+
+
+def append_notice(page_id: str, entry_text: str) -> None:
+    """'승인 불가 현황' 콜아웃에 오늘치 거부 항목 하나를 이어붙인다.
+
+    하루 안에 confirm 이 여러 번 돌며 거부가 여러 차례 나올 수 있다.
+    매번 통째로 갈아 끼우면 앞선 회차의 사유가 사라지므로, 기존 내용
+    뒤에 이어붙인다. 하루의 시작은 collect 가 reset_notice() 로 비운다.
+
+    콜아웃을 못 찾으면 경고만 남기고 끝낸다.
+    """
+    from datetime import datetime
+
+    from config.settings import KST
+
+    block_id = find_notice_block_id(page_id)
+    if not block_id:
+        log.warning(
+            f"'{NOTICE_MARKER}' 콜아웃을 찾지 못했습니다. "
+            f"페이지에 콜아웃을 만들고 첫 줄에 이 문구를 적어 주세요."
+        )
+        return
+
+    block = _request("GET", f"/blocks/{block_id}")
+    current = _block_text(block)
+
+    today = f"{datetime.now(KST):%Y-%m-%d}"
+    header = f"{NOTICE_MARKER} — {today}"
+
+    # 헤더 날짜가 오늘이 아니면(=reset_notice 실패, 혹은 자정 넘겨
+    # 첫 거부가 발생한 경우) 여기서도 새로 시작해 안전판을 둔다.
+    if current.startswith(header):
+        body = f"{current}\n\n{entry_text}"
+    else:
+        body = f"{header}\n\n{entry_text}"
+
+    _request(
+        "PATCH",
+        f"/blocks/{block_id}",
+        json={"callout": {"rich_text": [{"text": {"content": body[:MAX_TEXT_LEN]}}]}},
+    )
+
+
+def reset_notice(page_id: str) -> None:
+    """'승인 불가 현황' 콜아웃을 새 하루 시작 전으로 비운다.
+
+    collect 가 매일 아침 도는 시점에 호출해, 전날 누적된 거부 내역이
+    새 하루로 넘어오지 않게 한다.
+    """
+    from datetime import datetime
+
+    from config.settings import KST
+
+    block_id = find_notice_block_id(page_id)
+    if not block_id:
+        return
+
+    today = f"{datetime.now(KST):%Y-%m-%d}"
+    text = f"{NOTICE_MARKER} — {today}\n\n(오늘은 아직 없음)"
+    _request(
+        "PATCH",
+        f"/blocks/{block_id}",
+        json={"callout": {"rich_text": [{"text": {"content": text}}]}},
+    )
+
 
 # ── 속성 구성 ──────────────────────────────────────────
 def _domain_of(url: str) -> str:

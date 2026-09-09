@@ -62,6 +62,11 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # 속성은 ensure_content_schema() 가 채운다.
 NOTION_CONTENT_DATABASE_ID = os.getenv("NOTION_CONTENT_DATABASE_ID", "")
 
+# 보드가 있는 Notion 페이지 ID. 그 페이지에 '📋 승인 불가 현황' 으로
+# 시작하는 콜아웃 블록을 하나 만들어 두면, confirm 이 거부된 슬롯의
+# 사유를 그 블록에 통째로 갈아 끼운다.
+NOTION_BOARD_PAGE_ID = os.getenv("NOTION_BOARD_PAGE_ID", "")
+
 # Slack Incoming Webhook (비어 있으면 알림을 건너뛴다)
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
 
