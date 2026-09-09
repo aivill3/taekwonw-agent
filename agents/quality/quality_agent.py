@@ -7,7 +7,6 @@ LLM 호출은 전혀 없다. 같은 입력이면 항상 같은 출력이 나와�
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from pathlib import Path
 
 from config.quality_config import CheckConfig
@@ -18,8 +17,8 @@ from agents.quality.boilerplate_filter import BoilerplateFilter
 from .context_rules import ContextualPolarityResolver
 from agents.quality.quality_models import QualityReport, Severity
 from agents.quality.sentiment_analyzer import SentimentDictionary, analyze_sentiment
-from config.quality_config import Format, SeoConfig
-from agents.quality.seo_checker import SeoChecker, SeoReport
+from config.quality_config import SeoConfig
+from agents.quality.seo_checker import SeoChecker
 from core.text_normalizer import strip_markdown
 
 

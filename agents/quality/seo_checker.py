@@ -249,7 +249,9 @@ class SeoChecker:
             r.warnings.append(
                 f"제목이 깁니다: {r.title_length}자 — 모바일에서 뒷부분이 잘립니다"
             )
-
+        if not r.title.rstrip().endswith("?"):
+            r.warnings.append("제목이 의문문이 아닙니다 — 물음표(?)로 끝나야 합니다")
+            
     def _check_body(self, r: SeoReport) -> None:
         cfg = self.config
         if r.body_chars < cfg.body_min_chars:

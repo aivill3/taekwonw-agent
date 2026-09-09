@@ -73,9 +73,6 @@ STATUS_PENDING = "초안대기"
 STATUS_WRITTEN = "작성완료"
 STATUS_HOLD = "보류"
 
-# 옛 이름. publish_workflow 등 다른 모듈이 아직 참조할 수 있어 남겨 둔다.
-STATUS_WAITING = STATUS_PENDING
-
 # 옵션 개명 이력. ensure_content_schema() 가 옛 이름을 찾으면 id 를 유지한
 # 채 이름만 바꾼다. 옵션을 새로 '추가'하면 기존 행 값이 옛 이름에 남는다.
 RENAMED_OPTIONS: dict[str, dict[str, str]] = {

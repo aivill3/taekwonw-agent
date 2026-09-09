@@ -36,44 +36,21 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from config.draft_config import (
+    BODY_MAX_CHARS,
+    EXAMPLE_EXCERPT_CHARS,
+    LENGTH_TIERS,
+    MIN_SOURCE_CHARS,
+)
 from config.quality_config import SeoConfig
 from config.settings import GUIDE_DIR
-from core.text_normalizer import strip_markdown
 from agents.drafting.corpus_retriever import BlogCorpus, SearchHit
 
+# 분량 기준(LENGTH_TIERS / BODY_MAX_CHARS / MIN_SOURCE_CHARS)과 발췌 길이는
+# config/draft_config.py 가 단일 출처다. 여기에 사본을 두지 않는다.
+# 사본을 두면 튜닝이 한쪽에만 반영돼, 생성기와 검사기가 다른 값을 본다.
+
 GUIDE_PATH = GUIDE_DIR / "writing_guide.md"
-
-# 예시 글 1편당 발췌 길이. 전문을 넣으면 프롬프트가 급격히 커진다.
-# 네이버 블로그 글은 줄바꿈이 많아 같은 글자 수여도 보이는 내용이 적다.
-_EXAMPLE_EXCERPT_CHARS = 1800
-
-
-# 원본 정보량에 따른 목표 분량 구간.
-# 소재가 얇은데 분량을 고정하면 LLM이 빈칸을 지어내 채운다.
-# 실제로 제목 한 줄만 주고 2,000자를 요구했을 때 경기 스코어·인용문이
-# 대량 창작되는 것을 확인했다.
-#
-# 상한은 어느 구간에서도 1,900자를 넘지 않는다.
-#
-# 처음에는 2,000자로 잡았는데, LLM 이 목표 상한에 맞춰 쓰다 보니 매번
-# 아슬아슬하게 넘겼다. (실측: 지시 2,000자 -> 결과 2,031자, 품질검사 경고)
-# 상한이 목표에 딱 붙어 있으면 넘칠 여지가 없으므로 100자를 비워 둔다.
-#
-# 이 값이 프롬프트 지시와 품질 검사(SeoConfig.body_max_chars) 양쪽에
-# 그대로 쓰인다.
-#
-# 챕터 수는 article_grouper 가 4개로 고정하므로 여기서는 표기용이다.
-# 실제 값은 DraftBrief.chapter_count 가 정한다.
-LENGTH_TIERS = [
-    # (원본 최소 글자 수, 목표 하한, 목표 상한, 챕터 수)
-    (1200, 1700, 1900, "4"),
-    (600, 1500, 1800, "4"),
-    (250, 1300, 1600, "4"),
-    (0, 1000, 1400, "4"),
-]
-
-# 목표 상한의 절대 한계. 구간 표를 손댈 때 실수로 넘기지 않도록 둔다.
-BODY_MAX_CHARS = 1900
 
 # 챕터별 분량을 따로 지시할 챕터 수의 하한.
 #
@@ -84,9 +61,6 @@ BODY_MAX_CHARS = 1900
 # 묶음 글 3편이 2,000·2,161·2,627자로 상위를 차지했다. 묶음은 챕터마다
 # 다른 사건을 다뤄야 해서 담을 내용이 많고, 그만큼 넘치기 쉽다.
 CHAPTER_HINT_MIN = 3
-
-# 이보다 원본이 짧으면 글을 쓰지 말고 사람이 판단하도록 알린다.
-MIN_SOURCE_CHARS = 120
 
 
 @dataclass
@@ -339,8 +313,8 @@ def format_examples(hits: list[SearchHit]) -> str:
 
     blocks = []
     for i, hit in enumerate(hits, 1):
-        excerpt = hit.text[:_EXAMPLE_EXCERPT_CHARS]
-        if len(hit.text) > _EXAMPLE_EXCERPT_CHARS:
+        excerpt = hit.text[:EXAMPLE_EXCERPT_CHARS]
+        if len(hit.text) > EXAMPLE_EXCERPT_CHARS:
             excerpt += " …"
         blocks.append(f"--- 예시 {i} ---\n{excerpt}")
     return "\n\n".join(blocks)

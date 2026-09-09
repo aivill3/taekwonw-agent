@@ -19,7 +19,6 @@ Stable Diffusion 특성:
   - 사람의 팔다리를 자주 망친다. 발차기 같은 동작은 특히 취약하다.
     평면 벡터 스타일로 추상화하면 눈에 덜 띈다.
 """
-from pathlib import Path
 
 from config.settings import IMAGE_DIR
 from core.logger import get_logger

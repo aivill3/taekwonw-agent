@@ -16,11 +16,10 @@
 import base64
 import json
 import time
-from pathlib import Path
 
 import requests
 
-from config.settings import DATA_DIR, GEMINI_API_KEY, REQUEST_TIMEOUT
+from config.settings import GEMINI_API_KEY, IMAGE_DIR, REQUEST_TIMEOUT
 from core.logger import get_logger
 from core.prompt_loader import load_prompt
 from tools.gemini_client import (
@@ -38,9 +37,6 @@ from tools.gemini_client import (
 )
 
 log = get_logger(__name__)
-
-IMAGE_DIR = DATA_DIR / "images"
-IMAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 # 이미지 모델은 텍스트 모델과 별도 할당량을 쓴다.
 # 나아가 Imagen 과 Gemini 이미지 모델도 서로 별도 할당량을 쓴다.

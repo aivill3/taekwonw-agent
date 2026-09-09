@@ -44,8 +44,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import date
 
-from config.draft_config import SOLO_THRESHOLD
-from agents.drafting.draft_prompt import MIN_SOURCE_CHARS, DraftBrief, SourceArticle
+from config.draft_config import MIN_SOURCE_CHARS, SOLO_THRESHOLD
+from agents.drafting.draft_prompt import DraftBrief, SourceArticle
 from agents.drafting.corpus_retriever import tokenize
 
 # 한 편의 챕터 수. 단독형은 소주제 4개, 묶음형은 기사 4건으로 채운다.

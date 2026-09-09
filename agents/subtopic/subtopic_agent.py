@@ -37,15 +37,20 @@
   - 체인의 모든 모델이 소진되면 그때 중단한다
 """
 import json
-import re
 import time
 
 import requests
 
 from config.settings import GEMINI_API_KEY, REQUEST_TIMEOUT
-from config.draft_config import SUBTOPIC_BATCH_SIZE, SUBTOPIC_FALLBACK_MODELS as GEMINI_FALLBACK_MODELS, SUBTOPIC_MODEL as GEMINI_MODEL
+from config.draft_config import (
+    SOLO_THRESHOLD,
+    SUBTOPIC_BATCH_SIZE,
+    SUBTOPIC_FALLBACK_MODELS as GEMINI_FALLBACK_MODELS,
+    SUBTOPIC_MODEL as GEMINI_MODEL,
+    SUBTOPIC_PROMPT_BODY_LIMIT as PROMPT_BODY_LIMIT,
+    SUBTOPIC_REQUEST_INTERVAL as REQUEST_INTERVAL,
+)
 from core.logger import get_logger
-from config.draft_config import SOLO_THRESHOLD
 from core.prompt_loader import load_prompt
 from tools.gemini_client import (
     MAX_RETRIES,
@@ -86,8 +91,9 @@ SUBTOPIC_BUNDLE = 1    # 묶음 발행 기사 (기사 1건 = 챕터 1개)
 # 하위 호환: 배치 응답 스키마의 minItems/maxItems 범위로 쓰인다.
 SUBTOPIC_MIN = SUBTOPIC_BUNDLE
 SUBTOPIC_MAX = SUBTOPIC_SOLO
-PROMPT_BODY_LIMIT = 3000    # 본문 전달 상한 (자)
-REQUEST_INTERVAL = 5.0      # 요청 간 최소 간격(초). 무료 티어 RPM 여유 확보용
+
+# 본문 전달 상한과 요청 간격은 config/draft_config.py 가 단일 출처다.
+# (SUBTOPIC_PROMPT_BODY_LIMIT / SUBTOPIC_REQUEST_INTERVAL)
 
 
 

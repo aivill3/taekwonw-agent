@@ -53,9 +53,9 @@ Gemini 2.0 Flash 는 RPD 20 이라 재시도까지 감안하면 하루 10편이 
 import re
 from datetime import datetime
 
-from config.settings import DATA_DIR, IMAGE_SOURCE, KST
+from config.settings import DRAFT_DIR, IMAGE_SOURCE, KST
 from core.logger import get_logger, setup
-from tools.slack_notifier import notify_empty, notify_failure, notify_published
+from tools.slack_notifier import notify_failure, notify_published
 from tools.notion_store import (
     STATUS_DEFAULT,
     STATUS_REQUESTED_DRAFT,
@@ -87,9 +87,6 @@ from agents.quality.quality_gate import (
 from agents.drafting.schema_draft_agent import write_all
 
 log = get_logger(__name__)
-
-DRAFT_DIR = DATA_DIR / "drafts"
-DRAFT_DIR.mkdir(parents=True, exist_ok=True)
 
 _RE_SLUG = re.compile(r"[^0-9A-Za-z가-힣]+")
 
