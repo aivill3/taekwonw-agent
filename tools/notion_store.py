@@ -47,7 +47,6 @@ PROP_WRITER_MODEL = "작성모델"  # type: rich_text — 초안을 쓴 모델 (
 PROP_MORPH = "형태소"    # type: rich_text — 품질 측정 요약 (감정·형태소·금칙어·구조)
 PROP_MODE = "발행구분"   # type: select — 단독 | 묶음 | 보류 (본문 길이 기준)
 PROP_BUNDLE = "묶음"     # type: select — 어느 글에 들어갈지. 보드 뷰의 그룹 기준
-PROP_BUNDLE_STATE = "묶음상태"  # type: select — 배치가 규칙에 맞는지 (confirm --check 가 씀)
 
 # ── 묶음 슬롯 ─────────────────────────────────────────
 # 보드 뷰에서 카드를 끌어 옮길 칸이다. content 가 자동 배정하고,
@@ -84,15 +83,11 @@ BUNDLE_EXCLUDE = "제외"
 # 어느 쪽 의도인지 코드가 알 수 없으므로 상태는 바꾸지 않는다.
 BUNDLE_LEGACY_HOLD = "보류"
 
-# 보드 카드 아래에 띄우는 판정 문구.
-# Notion 은 "이 칸에 4개까지"를 막지도, 조건부 문구를 실시간으로 띄우지도
-# 못한다. 그래서 `confirm --check` 가 검사 결과를 이 속성에 써 넣는다.
-# 칸 제목 옆의 건수는 Notion 이 실시간으로 보여주므로 그것과 함께 본다.
-BUNDLE_STATE_OK = "✅ 승인 가능"
-BUNDLE_STATE_NG = "⚠️ 승인 불가"
-BUNDLE_STATE_WAIT = "⏳ 대기"
-BUNDLE_STATE_EXCLUDE = "🚫 제외"
-BUNDLE_STATE_NONE = "◻️ 미배정"
+# 카드에는 판정 칩을 붙이지 않는다(2026-09-14).
+# '대기'·'제외'·'미배정' 칩은 카드가 놓인 칸과 같은 말을 두 번 하는 것이고,
+# 어긋나면 어느 쪽이 맞는지 알 수 없었다. 배치는 칸이, 판정은 보드 밑
+# '승인 불가 현황' 콜아웃이 말한다. 칸 제목 옆의 건수는 Notion 이 실시간으로
+# 보여주므로 그것과 함께 본다.
 BUNDLE_SOLO_SLOTS = [f"단독{i}" for i in range(1, 7)]   # 긴 기사 1건 = 한 편
 BUNDLE_GROUP_SLOTS = [f"묶음{i}" for i in range(1, 5)]  # 짧은 기사 4건 = 한 편
 BUNDLE_SLOTS = BUNDLE_SOLO_SLOTS + BUNDLE_GROUP_SLOTS
@@ -260,17 +255,6 @@ EXPECTED_PROPS: dict[str, dict] = {
         }
     },
     PROP_BUNDLE_ID: {"rich_text": {}},
-    PROP_BUNDLE_STATE: {
-        "select": {
-            "options": [
-                {"name": BUNDLE_STATE_OK, "color": "green"},
-                {"name": BUNDLE_STATE_NG, "color": "red"},
-                {"name": BUNDLE_STATE_WAIT, "color": "yellow"},
-                {"name": BUNDLE_STATE_EXCLUDE, "color": "gray"},
-                {"name": BUNDLE_STATE_NONE, "color": "default"},
-            ]
-        }
-    },
     PROP_WRITER_MODEL: {"rich_text": {}},
     PROP_MORPH: {"rich_text": {}},
     PROP_MODE: {
@@ -443,6 +427,13 @@ def find_origin_toggle_id(page_id: str) -> str | None:
 
 NOTICE_MARKER = "승인 불가 현황"
 
+# 아직 판정이 돌지 않은 날 콜아웃에 남기는 자리표시.
+# 아침에 reset_notice 가 써 넣고, 첫 confirm 이 현황으로 덮어쓴다.
+NOTICE_EMPTY = "(오늘 아직 판정 전)"
+
+# 콜아웃 첫 줄에서 날짜를 뽑는다. '승인 불가 현황 — 2026-09-12' 형식.
+RE_NOTICE_DATE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+
 
 def find_notice_block_id(page_id: str) -> str | None:
     """페이지에서 '승인 불가 현황' 콜아웃의 block id를 찾는다.
@@ -459,12 +450,26 @@ def find_notice_block_id(page_id: str) -> str | None:
     return None
 
 
-def append_notice(page_id: str, entry_text: str) -> None:
-    """'승인 불가 현황' 콜아웃에 오늘치 거부 항목 하나를 이어붙인다.
+def write_notice(page_id: str, body: str) -> bool:
+    """'승인 불가 현황' 콜아웃을 통째로 다시 쓴다. 성공하면 True.
 
-    하루 안에 confirm 이 여러 번 돌며 거부가 여러 차례 나올 수 있다.
-    매번 통째로 갈아 끼우면 앞선 회차의 사유가 사라지므로, 기존 내용
-    뒤에 이어붙인다. 하루의 시작은 collect 가 reset_notice() 로 비운다.
+    이어붙이지 않고 덮어쓰는 이유
+    ---------------------------
+    예전에는 회차별 거부 내역을 아래로 쌓았다(append_notice). 카드에 판정
+    칩이 있어서 콜아웃은 '사유 보관함' 역할만 하면 됐기 때문이다.
+
+    칩을 걷어낸 뒤로 이 콜아웃이 판정을 읽을 유일한 창구가 됐다. 그러면
+    담아야 할 것이 '오늘 있었던 일'이 아니라 '지금 무엇을 손봐야 하는가'로
+    바뀐다. 누적하면 지난 회차에 이미 고친 항목이 섞여 들어가, 무엇이
+    현재 상태인지 읽을 수 없다. 2000자 제한에 닿아 뒷부분이 잘리는 문제도
+    누적 방식에서만 생긴다.
+
+    지난 회차 이력은 로그와 Slack 에 남는다. 보드는 현재 상태를 본다.
+
+    첫 줄은 여기서 붙인다 — 표식 문구와 갱신 시각. find_notice_block_id()
+    가 이 표식으로 블록을 찾으므로 호출자가 임의로 바꾸면 안 된다.
+    시각을 넣는 것은, 오늘 아직 판정이 돌지 않았을 때 어제 내용이 지금
+    상태인 것처럼 읽히는 것을 막기 위해서다.
 
     콜아웃을 못 찾으면 경고만 남기고 끝낸다.
     """
@@ -478,49 +483,60 @@ def append_notice(page_id: str, entry_text: str) -> None:
             f"'{NOTICE_MARKER}' 콜아웃을 찾지 못했습니다. "
             f"페이지에 콜아웃을 만들고 첫 줄에 이 문구를 적어 주세요."
         )
-        return
+        return False
 
-    block = _request("GET", f"/blocks/{block_id}")
-    current = _block_text(block)
-
-    today = f"{datetime.now(KST):%Y-%m-%d}"
-    header = f"{NOTICE_MARKER} — {today}"
-
-    # 헤더 날짜가 오늘이 아니면(=reset_notice 실패, 혹은 자정 넘겨
-    # 첫 거부가 발생한 경우) 여기서도 새로 시작해 안전판을 둔다.
-    if current.startswith(header):
-        body = f"{current}\n\n{entry_text}"
-    else:
-        body = f"{header}\n\n{entry_text}"
-
+    stamp = f"{datetime.now(KST):%Y-%m-%d %H:%M}"
+    text = f"{NOTICE_MARKER} — {stamp} 기준\n\n{body}"
     _request(
         "PATCH",
         f"/blocks/{block_id}",
-        json={"callout": {"rich_text": [{"text": {"content": body[:MAX_TEXT_LEN]}}]}},
+        json={"callout": {"rich_text": [{"text": {"content": text[:MAX_TEXT_LEN]}}]}},
     )
+    return True
 
 
-def reset_notice(page_id: str) -> None:
-    """'승인 불가 현황' 콜아웃을 새 하루 시작 전으로 비운다.
+def reset_notice(page_id: str, *, force: bool = False) -> bool:
+    """'승인 불가 현황' 콜아웃이 어제 것이면 비운다. 실제로 비웠으면 True.
 
-    collect 가 매일 아침 도는 시점에 호출해, 전날 누적된 거부 내역이
-    새 하루로 넘어오지 않게 한다.
+    collect 가 매일 아침 도는 시점에 호출해, 전날 판정이 오늘 상태인 것처럼
+    읽히는 것을 막는다.
+
+    날짜를 보는 이유
+    ---------------
+    예전에는 호출되면 무조건 비웠다. collect 를 하루 한 번만 돌린다는
+    전제였는데, 오후에 한 번 더 돌리면 그날 오전 판정이 통째로 날아간다.
+    헤더 날짜가 오늘이면 손대지 않는다.
+
+    ISO 날짜라 문자열 비교로 충분하다(사전순 == 시간순). 미래 날짜가
+    들어와도(시계 틀어짐) 남기는 쪽으로 판정한다.
+
+    날짜를 못 찾으면 비운다. 내용이 없거나 사람이 새로 만든 빈 콜아웃일
+    가능성이 높고, 어느 쪽이든 다음 confirm 이 현황으로 덮어쓴다.
+
+    force: 날짜와 무관하게 비운다 (수동 정리·테스트용).
     """
     from datetime import datetime
 
     from config.settings import KST
 
-    block_id = find_notice_block_id(page_id)
-    if not block_id:
-        return
-
     today = f"{datetime.now(KST):%Y-%m-%d}"
-    text = f"{NOTICE_MARKER} — {today}\n\n(오늘은 아직 없음)"
-    _request(
-        "PATCH",
-        f"/blocks/{block_id}",
-        json={"callout": {"rich_text": [{"text": {"content": text}}]}},
-    )
+
+    if not force:
+        block_id = find_notice_block_id(page_id)
+        if not block_id:
+            log.warning(f"'{NOTICE_MARKER}' 콜아웃을 찾지 못해 초기화를 건너뜁니다")
+            return False
+        block = _request("GET", f"/blocks/{block_id}")
+        first_line = _block_text(block).split("\n", 1)[0]
+        found = RE_NOTICE_DATE.search(first_line)
+        if found and found.group(1) >= today:
+            log.info(f"'{NOTICE_MARKER}' 는 오늘({today}) 기록입니다 — 그대로 둡니다")
+            return False
+
+    if not write_notice(page_id, NOTICE_EMPTY):
+        return False
+    log.info(f"'{NOTICE_MARKER}' 초기화 완료 ({today})")
+    return True
 
 
 # ── 속성 구성 ──────────────────────────────────────────
@@ -801,7 +817,7 @@ def mark_written(page_id: str) -> None:
 
 
 def finish_article(page_id: str) -> None:
-    """초안이 나갔다 — '작성완료'로 넘기고 슬롯과 판정 칩을 비운다.
+    """초안이 나갔다 — '작성완료'로 넘기고 슬롯을 비운다.
 
     슬롯을 여기서 비우는 이유
     ----------------------
@@ -814,7 +830,7 @@ def finish_article(page_id: str) -> None:
     확정(confirm) 시점이 아니라 여기서 비우는 것은, 초안을 기다리는
     동안에는 카드가 보드에 남아 있어야 무엇이 진행 중인지 보이기 때문이다.
 
-    셋을 한 번의 PATCH 로 보낸다. 상태만 바뀌고 슬롯이 남으면 다음
+    둘을 한 번의 PATCH 로 보낸다. 상태만 바뀌고 슬롯이 남으면 다음
     회차와 겹치고, 슬롯만 비고 상태가 남으면 초안을 또 쓴다.
     """
     _request(
@@ -824,7 +840,6 @@ def finish_article(page_id: str) -> None:
             "properties": {
                 PROP_STATUS: {"select": {"name": STATUS_WRITTEN}},
                 PROP_BUNDLE: {"select": None},
-                PROP_BUNDLE_STATE: {"select": None},
             }
         },
     )
@@ -1179,10 +1194,6 @@ def fetch_by_status(data_source_id: str, status: str) -> list[dict]:
                 "bundle": bundle.get("name", ""),
                 # confirm 이 붙인 고유 이름. publish 가 이 값으로 묶음을 되살린다.
                 "bundle_id": _plain_text(props.get(PROP_BUNDLE_ID, {})),
-                # confirm 이 남긴 판정. cleanup_rejected 가 이 값으로 거른다.
-                "bundle_state": (
-                    (props.get(PROP_BUNDLE_STATE) or {}).get("select") or {}
-                ).get("name", ""),
             })
         if not data.get("has_more"):
             break
@@ -1207,7 +1218,7 @@ def set_bundle_id(page_id: str, bundle_id: str | None) -> None:
 
 
 def confirm_bundle(page_id: str, bundle_id: str) -> None:
-    """확정 처리 — 고유 이름을 붙이고 판정 칩을 지운다.
+    """확정 처리 — 묶음에 고유 이름을 붙인다.
 
     상태는 건드리지 않는다. 이미 '초안요청' 이고, publish 가 끝나야
     '작성완료' 로 간다. 묶음ID 가 붙었다는 것이 곧 '확정됨' 의 표시다.
@@ -1227,18 +1238,9 @@ def confirm_bundle(page_id: str, bundle_id: str) -> None:
                 PROP_BUNDLE_ID: {
                     "rich_text": [{"text": {"content": bundle_id[:MAX_TEXT_LEN]}}]
                 },
-                # 확정된 카드에 '✅ 승인 가능'이 남아 있으면 무엇을 더
-                # 기다리는 것처럼 보인다. 묶음ID 가 붙은 것이 곧 결과다.
-                PROP_BUNDLE_STATE: {"select": None},
             }
         },
     )
-
-
-def set_bundle_state(page_id: str, state: str | None) -> None:
-    """보드 카드에 띄울 판정 문구. None 이면 비운다."""
-    value = {"select": {"name": state}} if state else {"select": None}
-    _request("PATCH", f"/pages/{page_id}", json={"properties": {PROP_BUNDLE_STATE: value}})
 
 
 def archive_page(page_id: str) -> None:
@@ -1246,29 +1248,36 @@ def archive_page(page_id: str) -> None:
     _request("PATCH", f"/pages/{page_id}", json={"in_trash": True})
 
 
-# '승인 불가' 판정을 받고 고쳐지지 않은 카드를 며칠 뒤 치울지.
+# '대기' 칸에서 짝을 기다리는 카드를 며칠까지 두고 볼지.
 #
-# 슬롯은 열 칸뿐이다(단독 6 · 묶음 4). 거부된 카드가 칸을 붙들고 있으면
-# 다음 회차 배정분이 들어갈 자리가 없다.
+# confirm 이 거부 카드에 '⚠️ 승인 불가' 칩을 붙이던 시절에는 그 칩이
+# 기준이었다. 칩은 2026-09-14 에 전부 걷어냈고, 지금 거부의 표시는
+# 카드가 '대기' 칸에 놓였다는 사실 하나다.
 #
 #   실측(2026-09-02): 단독1·단독3 에 2건씩 몰려 거부됐고, 그 상태로
-#   남아 두 칸이 묶였다.
+#   남아 두 칸이 묶였다. 지금은 거부 즉시 슬롯이 비워지므로 이 문제는
+#   없지만, 짝이 안 채워지는 카드가 후보 목록에 계속 남는 문제는 남는다.
 #
-# 시의성 문제도 있다. 어제 대회 소식을 사흘 뒤에 올릴 이유가 없다.
-REJECTED_MAX_AGE_DAYS = 1
+# 슬롯을 붙들지 않으므로 하루는 너무 짧다. 사흘이면 content 가 세 번
+# 다시 묶어볼 기회를 준 것이고, 그래도 4건이 안 채워졌다면 그날의
+# 뉴스로서 가치가 이미 떨어진 것이다.
+STALE_WAIT_MAX_AGE_DAYS = 3
 
 
-def cleanup_rejected(
+def cleanup_stale_wait(
     data_source_id: str,
     *,
-    days: int = REJECTED_MAX_AGE_DAYS,
+    days: int = STALE_WAIT_MAX_AGE_DAYS,
     dry_run: bool = False,
 ) -> int:
-    """'⚠️ 승인 불가' 인 채 방치된 카드를 '보류'로 넘기고 슬롯을 비운다.
+    """'대기' 칸에서 N일 넘게 짝을 못 만난 카드를 '보류'로 넘긴다.
 
-    기준은 '마지막 수정 시각'이다(생성 시각이 아니다). 사람이 카드를 다른
-    칸으로 옮기면 수정 시각이 갱신되므로, 고치는 중인 카드는 대상이 되지
-    않는다. 판정 칩이 찍힌 뒤로 하루가 지나도록 손대지 않은 것만 걸린다.
+    cleanup_rejected() 의 후신이다. '대기' 칸을 기준으로 본다. 칸은
+    카드가 실제로 놓인 자리라, 무엇이 방치됐는지를 정확히 말한다.
+
+    기준은 페이지 생성 시각이다(수정 시각이 아니다). content 가 회차마다
+    대기 카드를 다시 묶어보며 PATCH 를 날리므로, 수정 시각을 쓰면 카드가
+    영원히 '방금 손댄 것'이 되어 아무것도 정리되지 않는다.
 
     지우지 않고 '보류'로 옮기는 이유
     -----------------------------
@@ -1277,9 +1286,9 @@ def cleanup_rejected(
     cleanup_expired 가 RETENTION_DAYS 에 따라 휴지통으로 보낸다.
     (휴지통 이동이라 그 뒤로도 30일간 복구할 수 있다)
 
-    슬롯과 판정 칩을 함께 비우는 이유
-    ------------------------------
-    상태만 바꾸면 '보류'인데 '단독1' 을 차지한 카드가 남는다. content 의
+    슬롯을 함께 비우는 이유
+    ---------------------
+    상태만 바꾸면 '보류'인데 '대기' 칸을 차지한 카드가 남는다. content 의
     점유 검사에는 걸리지 않지만, 나중에 상태를 되돌렸을 때 엉뚱한 칸에
     나타난다.
     """
@@ -1291,23 +1300,23 @@ def cleanup_rejected(
     targets = []
 
     for item in fetch_by_status(data_source_id, STATUS_DEFAULT):
-        if item.get("bundle_state") != BUNDLE_STATE_NG:
+        if item.get("bundle") != BUNDLE_WAIT:
             continue
-        edited = item.get("edited") or item.get("created")
-        if not edited:
+        created = item.get("created")
+        if not created:
             continue
         try:
-            dt = datetime.fromisoformat(edited.replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
         except ValueError:
             continue
         if dt.astimezone(KST) < cutoff:
             targets.append(item)
 
     if not targets:
-        log.info(f"'{BUNDLE_STATE_NG}' 로 {days}일 이상 방치된 카드가 없습니다")
+        log.info(f"'{BUNDLE_WAIT}' 칸에 {days}일 이상 묵은 카드가 없습니다")
         return 0
 
-    log.info(f"'{BUNDLE_STATE_NG}' {days}일 경과 {len(targets)}건 정리 대상")
+    log.info(f"'{BUNDLE_WAIT}' {days}일 경과 {len(targets)}건 정리 대상")
     for item in targets[:5]:
         log.info(f"    - {item['title'][:50]}")
     if len(targets) > 5:
@@ -1319,8 +1328,8 @@ def cleanup_rejected(
     ok = 0
     for item in targets:
         try:
-            # 상태·슬롯·칩을 한 번의 PATCH 로 보낸다. 나눠 보내면 중간에
-            # 끊겼을 때 '보류'인데 슬롯을 붙들고 있는 카드가 남는다.
+            # 상태와 슬롯을 한 번의 PATCH 로 보낸다. 나눠 보내면 중간에
+            # 끊겼을 때 '보류'인데 '대기' 칸을 붙들고 있는 카드가 남는다.
             _request(
                 "PATCH",
                 f"/pages/{item['page_id']}",
@@ -1328,7 +1337,6 @@ def cleanup_rejected(
                     "properties": {
                         PROP_STATUS: {"select": {"name": STATUS_HOLD}},
                         PROP_BUNDLE: {"select": None},
-                        PROP_BUNDLE_STATE: {"select": None},
                     }
                 },
             )
@@ -1336,7 +1344,7 @@ def cleanup_rejected(
         except Exception as e:
             log.warning(f"정리 실패 ({item['title'][:30]}): {e}")
 
-    log.info(f"거부 카드 {ok}/{len(targets)}건을 '{STATUS_HOLD}' 로 넘기고 슬롯을 비웠습니다")
+    log.info(f"묵은 대기 카드 {ok}/{len(targets)}건을 '{STATUS_HOLD}' 로 넘겼습니다")
     return ok
 
 

@@ -61,34 +61,57 @@ Notion 보드는 "이 칸에 4개까지만"을 막지 못한다. 다섯 번째 �
 앞의 것까지 '보류'로 넘어가면서, 짝만 기다리면 될 기사가 후보에서
 사라졌다. 그래서 칸을 '대기'(코드)와 '제외'(사람)로 나눴다.
 
-판정 문구
---------
-거부된 칸의 카드는 '대기' 로 내려가면서 '⏳ 대기' 칩을 받는다. 통과한
-카드는 묶음ID 가 붙는 것이 곧 결과이므로 칩을 지운다.
+판정은 카드가 아니라 콜아웃에 적는다
+--------------------------------
+2026-09-14 이전에는 카드마다 '묶음상태' 칩(✅ 승인 가능 / ⚠️ 승인 불가 /
+⏳ 대기 / 🚫 제외 / ◻️ 미배정)을 붙였다. 전부 걷어냈다.
 
-  단독1  →  묶음ID 부여 (칩 없음) → publish 로 이어짐
-  묶음2  →  '선정됨' + '대기' 칸으로 이동 + ⏳ 대기
+다섯 중 셋은 카드가 놓인 칸과 같은 말을 두 번 하고 있었다. '대기' 칸의
+카드에 '⏳ 대기' 를 붙이는 식이다. 같은 사실을 두 군데가 말하면 언젠가
+어긋나고, 어긋나면 어느 쪽이 맞는지 알 방법이 없다. 실제로 어긋났다.
 
-거부 사유는 카드가 아니라 보드 밑 '📋 승인 불가 현황' 콜아웃에 적는다.
-카드마다 '⚠️ 승인 불가' 를 붙여 봐야 '왜' 그랬는지는 담기지 않고, 카드가
-대기로 내려간 뒤에는 그 칩이 지금 상태를 잘못 말하기 때문이다.
+나머지 둘도 오래가지 못했다. 통과한 카드의 '✅ 승인 가능'은 확정되는
+순간 지워야 했고(묶음ID 가 붙는 것이 곧 결과다), 거부된 카드의
+'⚠️ 승인 불가'는 카드가 '대기' 로 내려가는 순간 거짓이 됐다.
 
-  📋 승인 불가 현황 — 2026-09-09
+그래서 역할을 나눴다.
 
-  16:52 기준
+  칸       이 카드가 지금 어디에 속하는가 (단독N · 묶음N · 대기 · 제외)
+  콜아웃   이번 판정이 무엇을 어떻게 판단했는가
+
+보드 밑 '승인 불가 현황' 콜아웃에 현황 전문을 쓴다. 이어붙이지 않고
+매번 통째로 덮어쓴다 — 담아야 할 것이 '오늘 있었던 일'이 아니라 '지금
+무엇을 손봐야 하는가'이기 때문이다. 지난 회차는 로그와 Slack 에 남는다.
+
+  승인 불가 현황 — 2026-09-14 17:08 기준
+
   ❌ 묶음1 — 묶음 슬롯에 2건 (4건이어야 함 — 2건 부족)
       · 극동대, '감곡 K-컬처 페스티벌' 9월 12~14일 개최…유학생
+      → '대기' 칸으로 내렸습니다
+  ✅ 확정 2편 — 20260914-01 · 20260914-02
+  ⏳ 대기 3건 · 🚫 제외 1건 · ◻️ 미배정 0건
 
-하루 동안 회차별로 이어붙고, 다음 날 아침 collect 가 reset_notice() 로
-비운다. NOTION_BOARD_PAGE_ID 가 비어 있으면 이 기록은 건너뛴다.
+NOTION_BOARD_PAGE_ID 가 비어 있으면 이 기록은 건너뛴다. 그 경우 판정은
+로그에만 남는다.
 
 이렇게 하는 이유는 실행을 한 번으로 끝내기 위해서다. 사람이 로그를 보지
 않는다는 전제에서는, 왜 안 넘어갔는지가 보드에 남아야 한다. 예전에는
 --check 로 미리 보고 confirm 으로 확정하는 2단계였는데, 버튼을 누르는
 사람에게 같은 일을 두 번 시키는 셈이었다.
 
---check 는 확정 없이 판정만 보고 싶을 때 쓴다. 미리 점검하는 용도라
-CLI 에만 남긴다.
+--check 는 '선정됨' 을 본다
+-------------------------
+실행은 '초안요청'(버튼이 눌린 것)을 보지만, 점검은 '선정됨'(아직 누르지
+않은 배치)을 본다. 대상이 같으면 점검이 사실상 돌아가지 않는다 — 폴링이
+30분마다 '초안요청' 을 집어가므로, 사람이 CLI 를 칠 무렵이면 그 카드는
+이미 처리돼 목록이 비어 있다.
+
+점검도 같은 콜아웃에 쓴다. 대신 맨 위에 한 줄을 덧붙인다.
+
+  ※ 점검 — 아무것도 바꾸지 않았습니다
+
+이 줄이 없으면 예고와 결과가 같은 자리에서 같은 얼굴로 보인다. 상태도
+슬롯도 바꾸지 않으므로, 점검이 남기는 것은 이 글 하나뿐이다.
 
 Notion 은 조건부 문구를 실시간으로 띄우지 못하므로, 카드를 옮긴 뒤에는
 다시 실행해야 갱신된다. 칸 제목 옆의 '건수'는 Notion 이 실시간으로
@@ -104,23 +127,17 @@ from tools.notion_store import (
     BUNDLE_GROUP_SLOTS,
     BUNDLE_LEGACY_HOLD,
     BUNDLE_SOLO_SLOTS,
-    BUNDLE_STATE_EXCLUDE,
-    BUNDLE_STATE_NG,
-    BUNDLE_STATE_NONE,
-    BUNDLE_STATE_OK,
-    BUNDLE_STATE_WAIT,
     BUNDLE_WAIT,
     STATUS_DEFAULT,
     STATUS_HOLD,
     STATUS_REQUESTED_DRAFT,
-    append_notice,
     confirm_bundle,
     ensure_schema,
     fetch_by_status,
     resolve_data_source_id,
     set_bundle,
     set_bundle_id,
-    set_bundle_state,
+    write_notice,
     update_status,
 )
 from agents.drafting.article_grouper import CHAPTERS_PER_POST, BUNDLE_SIZE
@@ -153,49 +170,6 @@ def _validate(slot: str, members: list[dict]) -> tuple[bool, str]:
     return False, f"알 수 없는 슬롯 '{slot}'"
 
 
-def _write_states(
-    slots: dict[str, list[dict]],
-    wait: list[dict],
-    exclude: list[dict],
-    unassigned: list[dict],
-    results: dict[str, tuple[bool, str]],
-) -> int:
-    """보드 카드에 판정 문구를 써 넣는다. 쓴 개수를 반환한다.
-
-    같은 슬롯의 카드는 모두 같은 문구를 받는다. 어느 카드를 보든
-    이 묶음이 승인 가능한지 알 수 있어야 하기 때문이다.
-    """
-    written = 0
-
-    for slot, members in slots.items():
-        passed, _reason = results[slot]
-        state = BUNDLE_STATE_OK if passed else BUNDLE_STATE_NG
-        for m in members:
-            try:
-                set_bundle_state(m["page_id"], state)
-                written += 1
-            except Exception as e:
-                log.warning(f"판정 문구 기록 실패 ({m['title'][:30]}): {e}")
-
-    for it, state in [(x, BUNDLE_STATE_WAIT) for x in wait] + [
-        (x, BUNDLE_STATE_EXCLUDE) for x in exclude
-    ]:
-        try:
-            set_bundle_state(it["page_id"], state)
-            written += 1
-        except Exception as e:
-            log.warning(f"판정 문구 기록 실패 ({it['title'][:30]}): {e}")
-
-    for it in unassigned:
-        try:
-            set_bundle_state(it["page_id"], BUNDLE_STATE_NONE)
-            written += 1
-        except Exception as e:
-            log.warning(f"판정 문구 기록 실패 ({it['title'][:30]}): {e}")
-
-    return written
-
-
 def _next_bundle_ids(existing: list[str], count: int) -> list[str]:
     """오늘 날짜로 다음 묶음ID 를 만든다. ['20260901-03', '20260901-04', ...]
 
@@ -219,38 +193,88 @@ def _next_bundle_ids(existing: list[str], count: int) -> list[str]:
     return out
 
 
-def _notice_entry(
-    rejected: dict[str, list[dict]],
+def _status_body(
+    slots: dict[str, list[dict]],
     results: dict[str, tuple[bool, str]],
+    wait: list[dict],
+    exclude: list[dict],
+    unassigned: list[dict],
+    *,
+    check_only: bool,
+    confirmed: list[str] | None = None,
 ) -> str:
-    """콜아웃에 이어붙일 이번 회차 거부 내역.
+    """콜아웃에 쓸 현황 전문(全文)을 만든다.
 
-    날짜 헤더는 append_notice() 가 붙이므로 여기서는 시각만 적는다.
-    하루에 confirm 이 여러 번 돌면 시각별로 쌓여, 어느 회차의 판정인지
-    구분된다.
+    칩을 걷어낸 뒤로 이 글이 판정을 읽을 유일한 창구다. 그래서 '거부 사유'
+    만이 아니라 이번 판정의 전부를 담는다 — 무엇이 막혔는지, 무엇이
+    통과했는지, 나머지가 어느 칸에 몇 건 있는지.
 
-        16:52 기준
+    순서는 손댈 일이 있는 것부터다. 거부 → 통과 → 그 외 칸의 건수.
+    보드를 여는 사람이 맨 위 몇 줄만 읽고도 오늘 할 일을 알 수 있어야 한다.
+
+    점검(--check)일 때는 맨 위에 한 줄을 덧붙인다. 같은 콜아웃을 쓰므로,
+    이 글이 예고인지 결과인지 구분되지 않으면 보드가 거짓말을 한다.
+
+        ※ 점검 — 아무것도 바꾸지 않았습니다
+
         ❌ 묶음1 — 묶음 슬롯에 2건 (4건이어야 함 — 2건 부족)
             · 극동대, '감곡 K-컬처 페스티벌' 9월 12~14일 개최…유학생
+            → '대기' 칸으로 내렸습니다
+        ✅ 확정 2편 — 20260914-01 · 20260914-02
+        ⏳ 대기 3건 · 🚫 제외 1건 · ◻️ 미배정 0건
     """
-    now = f"{datetime.now(KST):%H:%M}"
-    lines = [f"{now} 기준"]
+    lines: list[str] = []
+    if check_only:
+        lines += ["※ 점검 — 아무것도 바꾸지 않았습니다", ""]
 
+    rejected = {k: v for k, v in slots.items() if not results[k][0]}
     for slot in sorted(rejected):
-        _passed, reason = results[slot]
-        lines.append(f"❌ {slot} — {reason}")
+        lines.append(f"❌ {slot} — {results[slot][1]}")
         for m in rejected[slot]:
             # 44자에서 자른다. 제목이 길면 콜아웃이 화면을 넘어간다.
             lines.append(f"    · {m['title'][:44]}")
+        if not check_only:
+            # 카드가 어디로 갔는지까지 적는다. 보드에서 카드를 찾지 못해
+            # '사라졌다'고 오해하는 것을 막는다.
+            lines.append(f"    → '{BUNDLE_WAIT}' 칸으로 내렸습니다")
+
+    passed = sorted(k for k in slots if results[k][0])
+    if check_only:
+        if passed:
+            lines.append(f"✅ 승인 가능 {len(passed)}편 — {' · '.join(passed)}")
+    elif confirmed:
+        lines.append(f"✅ 확정 {len(confirmed)}편 — {' · '.join(confirmed)}")
+
+    lines.append(
+        f"⏳ {BUNDLE_WAIT} {len(wait)}건 · 🚫 {BUNDLE_EXCLUDE} {len(exclude)}건 "
+        f"· ◻️ 미배정 {len(unassigned)}건"
+    )
+
+    if not rejected and not passed:
+        lines.append("손댈 것이 없습니다.")
 
     return "\n".join(lines)
+
+
+def _publish_status(page_id: str, body: str) -> None:
+    """현황을 콜아웃에 쓴다. 실패해도 판정 결과를 무르지 않는다.
+
+    보드 페이지 ID 가 설정돼 있지 않으면 조용히 건너뛴다 — 콜아웃은
+    사람이 읽는 창구이고, 판정 자체는 로그와 Slack 에도 남는다.
+    """
+    if not page_id:
+        return
+    try:
+        write_notice(page_id, body)
+    except Exception as e:
+        log.warning(f"현황 기록 실패: {e}")
 
 
 def run(*, dry_run: bool = False, check_only: bool = False) -> None:
     setup()
     log.info("=" * 50)
     if check_only:
-        log.info("배치 점검 (판정 문구만 기록)")
+        log.info(f"배치 점검 — '{STATUS_DEFAULT}' 대상 (판정 칩만 기록)")
     else:
         log.info("묶음 확정 시작" + (" [DRY-RUN]" if dry_run else ""))
     log.info("=" * 50)
@@ -262,11 +286,13 @@ def run(*, dry_run: bool = False, check_only: bool = False) -> None:
         # '초안요청' 옵션 추가가 여기서 일어난다.
         ensure_schema(news_ds)
 
-        # 사람이 [초안 작성] 을 눌러 '초안요청' 으로 바꾼 것만 본다.
-        # '선정됨' 은 아직 배치 중일 수 있어 건드리지 않는다.
-        items = fetch_by_status(news_ds, STATUS_REQUESTED_DRAFT)
+        # 실행은 사람이 [초안 작성] 을 눌러 '초안요청' 으로 바꾼 것만 본다.
+        # 점검은 반대로 아직 누르지 않은 '선정됨' 을 본다 — 같은 대상을 보면
+        # 폴링이 이미 집어간 뒤라 목록이 비어 점검이 돌아가지 않는다.
+        target_status = STATUS_DEFAULT if check_only else STATUS_REQUESTED_DRAFT
+        items = fetch_by_status(news_ds, target_status)
         if not items:
-            log.info(f"'{STATUS_REQUESTED_DRAFT}' 기사가 없습니다. 확정할 것이 없습니다.")
+            log.info(f"'{target_status}' 기사가 없습니다. 판정할 것이 없습니다.")
             return
 
         # 슬롯별로 모은다
@@ -336,15 +362,25 @@ def run(*, dry_run: bool = False, check_only: bool = False) -> None:
             log.warning(f"{rejected}개 슬롯이 규칙에 맞지 않습니다.")
             log.warning("보드에서 배치를 고친 뒤 다시 확인하세요.")
 
-        # ── 점검 모드: 판정 문구만 쓰고 끝낸다 ────────────
+        # ── 점검 모드: 콜아웃에 예고만 쓰고 끝낸다 ────────
+        #    상태도 슬롯도 바꾸지 않는다. 콜아웃 맨 위의 '※ 점검' 줄이
+        #    이 글을 결과가 아니라 예고로 읽게 한다.
         if check_only:
-            written = _write_states(slots, wait, exclude, unassigned, results)
+            _publish_status(
+                NOTION_BOARD_PAGE_ID,
+                _status_body(
+                    slots, results, wait, exclude, unassigned, check_only=True
+                ),
+            )
             log.info(
-                f"판정 기록 {written}건 — 승인 가능 {len(ok_slots)}편 · "
+                f"점검 완료 — 승인 가능 {len(ok_slots)}편 · "
                 f"불가 {rejected}개 · 대기 {len(wait)}건 · 제외 {len(exclude)}건 "
                 f"· 미배정 {len(unassigned)}건"
             )
-            log.info("보드에서 '묶음상태' 를 확인하세요. Content 는 만들지 않았습니다.")
+            log.info(
+                "보드 밑 '승인 불가 현황' 을 확인하세요. 아무것도 확정하지 "
+                "않았습니다 — 실제로 넘기려면 [초안 작성] 을 누르세요."
+            )
             return
 
         if dry_run:
@@ -359,6 +395,7 @@ def run(*, dry_run: bool = False, check_only: bool = False) -> None:
             log.warning("확정할 수 있는 슬롯이 없습니다. 거부된 배치는 되돌립니다.")
 
         confirmed = 0
+        confirmed_ids: list[str] = []   # 콜아웃에 적을 확정 묶음ID
         if ok_slots:
             # 오늘 이미 쓴 묶음ID 를 피해 번호를 이어받는다.
             bundle_ids = _next_bundle_ids(
@@ -366,7 +403,7 @@ def run(*, dry_run: bool = False, check_only: bool = False) -> None:
             )
 
             for (slot, members, reason), bid in zip(ok_slots, bundle_ids):
-                # 묶음ID 부여 + 판정 칩 제거. 상태는 '초안요청' 그대로다.
+                # 묶음ID 부여. 상태는 '초안요청' 그대로다.
                 # 한 기사라도 실패하면 그 묶음은 통째로 되돌린다. 절반만
                 # 확정되면 publish 가 3건짜리 묶음을 만들어 분량이 어긋난다.
                 ok: list[str] = []
@@ -384,6 +421,7 @@ def run(*, dry_run: bool = False, check_only: bool = False) -> None:
                     continue
 
                 confirmed += 1
+                confirmed_ids.append(bid)
                 log.info(f"확정 [{slot}] -> {bid} · {len(members)}건 — {reason}")
 
         # 규칙을 어긴 칸은 '선정됨' 으로 되돌리고 '대기' 로 옮긴다.
@@ -428,26 +466,6 @@ def run(*, dry_run: bool = False, check_only: bool = False) -> None:
             except Exception as e:
                 log.warning(f"되돌리기 실패 ({it['title'][:30]}): {e}")
 
-        # 판정 칩 — 대기로 옮긴 카드는 '⏳ 대기' 를 받는다. 칸과 칩이
-        # 어긋나면 보드를 읽는 사람이 헷갈리고, 직전 회차의 '⚠️ 승인 불가'
-        # 칩이 남아 있으면 지금 상태를 잘못 말한다.
-        #
-        # 거부 사유는 카드가 아니라 콜아웃에 적는다. 카드마다 같은 문구를
-        # 붙여 봐야 '왜' 그랬는지는 담기지 않기 때문이다.
-        if wait or unassigned or moved:
-            _write_states({}, wait + moved, [], unassigned, results)
-
-        # 보드 밑 '📋 승인 불가 현황' 콜아웃에 이번 회차 내역을 이어붙인다.
-        # 거부가 없으면 건드리지 않는다 — 앞 회차 내역이 그대로 남아야
-        # 하루 동안 무슨 일이 있었는지 보인다. 비우는 것은 collect 의 일이다.
-        if rejected_slots and NOTION_BOARD_PAGE_ID:
-            try:
-                append_notice(
-                    NOTION_BOARD_PAGE_ID, _notice_entry(rejected_slots, results)
-                )
-            except Exception as e:
-                log.warning(f"승인 불가 현황 기록 실패: {e}")
-
         # '제외' 칸만 상태를 '보류'로 옮긴다. 후보 목록에서 빠지고,
         # 되살리려면 Notion 에서 '선정됨'으로 되돌리면 된다.
         for it in exclude:
@@ -457,6 +475,17 @@ def run(*, dry_run: bool = False, check_only: bool = False) -> None:
             except Exception as e:
                 log.warning(f"제외 처리 실패 ({it['title'][:30]}): {e}")
 
+        # 보드 밑 콜아웃에 이번 판정의 전부를 쓴다. 카드에 칩이 없으므로
+        # 여기가 사람이 판정을 읽을 유일한 창구다. 거부가 없어도 쓴다 —
+        # 비어 있으면 '아직 안 돌았다' 와 구분되지 않는다.
+        _publish_status(
+            NOTION_BOARD_PAGE_ID,
+            _status_body(
+                slots, results, wait, exclude, unassigned,
+                check_only=False, confirmed=confirmed_ids,
+            ),
+        )
+
         log.info(
             f"확정 {confirmed}편 · 제외 {len(exclude)}건 · "
             f"거부·미배치 {reverted}건은 '{STATUS_DEFAULT}' 로 되돌림"
@@ -464,7 +493,7 @@ def run(*, dry_run: bool = False, check_only: bool = False) -> None:
         if confirmed:
             log.info("이어서 초안을 작성합니다 (`run.py publish --requested`).")
         if reverted:
-            log.info("되돌린 카드는 보드에서 '묶음상태' 를 확인한 뒤 다시 눌러주세요.")
+            log.info("되돌린 카드는 보드 밑 '승인 불가 현황' 을 확인한 뒤 다시 눌러주세요.")
         log.info("파이프라인 종료")
 
     except Exception as e:

@@ -3,7 +3,7 @@
 상태 로드 → 수집(naver + google) → 날짜 필터(이전 수집일 이후) → 중복 제거
 → 본문 추출 → 정제 → Notion 전체 저장(수집됨)
 → 선정(랭킹) → 소주제 생성(LLM) → 선정분 승격(선정됨)
-→ 거부 카드 정리(승인 불가 1일 경과) → 보관 정리
+→ 묵은 대기 카드 정리(3일 경과) → 보관 정리
 
 전체 기사를 먼저 저장하는 이유:
   선정 로직이 놓친 기사를 사람이 눈으로 확인하고 직접 고를 수 있게 한다.
@@ -14,11 +14,15 @@
   [사람] 보드에서 카드를 슬롯에 배치하고 [초안 작성] 버튼을 누른다
   [폴링] '초안요청' 을 감지해 confirm(검증) → publish(초안 작성)
 
-거부 카드 정리:
+묵은 대기 카드 정리:
   confirm 이 규칙 위반으로 거부한 카드는 '선정됨' 으로 되돌아오고
-  '⚠️ 승인 불가' 칩이 붙는다. 사람이 고치지 않으면 슬롯을 계속 붙들고
-  있어 다음 회차 배정이 막힌다. 하루가 지나도록 손대지 않은 것은
-  '보류' 로 넘기고 슬롯을 비운다.
+  '대기' 칸으로 내려간다. 다음 content 실행에서 새 기사와 다시 묶이지만,
+  짝이 끝내 안 채워지면 시의성을 잃은 채 후보 목록에 계속 남는다.
+  사흘이 지나도록 묶이지 않은 것은 '보류' 로 넘긴다.
+
+  거부 사유는 보드 밑 '승인 불가 현황' 콜아웃에 쌓인다. 그 콜아웃은
+  날짜가 바뀌었을 때만 비운다(reset_notice) — 하루 안에 collect 를
+  여러 번 돌려도 그날 사유가 날아가지 않는다.
 
 LLM 호출 조건:
   8단계(소주제 생성)만 LLM을 쓴다. 나머지는 전부 결정론적 코드다.
@@ -54,10 +58,10 @@ from tools.notion_store import (
     STATUS_DEFAULT,
     STATUS_REQUESTED,
     cleanup_expired,
-    cleanup_rejected,
+    cleanup_stale_wait,
     find_page_by_url,
     promote_to_selected,
-    reset_notice,         
+    reset_notice,
     resolve_data_source_id,
     save_all,
 )
@@ -91,6 +95,30 @@ def save_csv(articles: list[Article], prefix: str = "articles") -> None:
     log.info(f"CSV 백업: {path.name}")
 
 
+def _cleanup(data_source_id: str) -> None:
+    """묵은 대기 카드 정리 + 보관 정리.
+
+    수집 결과와 무관하게 매 실행 돌아야 한다. 어느 쪽도 오늘 들어온
+    기사를 보지 않는다 — 어제까지 쌓인 것의 뒤처리다.
+
+    예전에는 이 두 호출이 run() 의 12단계에만 있었다. 그 위에 '새로운
+    기사가 없습니다' 조기 반환이 있어, 주말처럼 신규 기사가 0건인 날에는
+    정리가 통째로 건너뛰어졌다(2026-09-12 거부분이 이틀간 방치됐다).
+
+    실패해도 파이프라인을 세우지 않는다. 다음 실행에서 다시 시도한다.
+    """
+    # 대기 카드를 먼저 치워야 그 결과가 같은 실행의 묶음 배정에 반영된다.
+    try:
+        cleanup_stale_wait(data_source_id)
+    except Exception as e:
+        log.warning(f"묵은 대기 카드 정리 실패(다음 실행에서 재시도): {e}")
+
+    try:
+        cleanup_expired(data_source_id)
+    except Exception as e:
+        log.warning(f"보관 정리 실패(다음 실행에서 재시도): {e}")
+
+
 def run(
     *,
     dry_run: bool = False,
@@ -110,8 +138,17 @@ def run(
     # 새 하루 시작 — 어제 누적된 '승인 불가 현황'을 비운다.
     # data_source_id 와 무관하게(뉴스DB가 아니라 고정 페이지의 블록이라)
     # 새 기사가 있든 없든 collect 가 도는 시점에 항상 실행한다.
+    # 콜아웃이 이미 오늘 날짜면 reset_notice 가 알아서 건너뛰므로, 하루에
+    # 여러 번 돌려도 그날 오전에 쌓인 사유가 날아가지 않는다.
+    #
+    # 실패해도 넘어간다. 이 호출은 try 블록 밖이라 여기서 예외가 나면
+    # 수집이 시작도 못 하고, notify_failure 가 try 안에 있어 Slack 알림도
+    # 가지 않는다. 콜아웃 비우기는 부수 작업이지 수집의 전제가 아니다.
     if NOTION_BOARD_PAGE_ID and not dry_run and not no_notion:
-        reset_notice(NOTION_BOARD_PAGE_ID)
+        try:
+            reset_notice(NOTION_BOARD_PAGE_ID)
+        except Exception as e:
+            log.warning(f"'승인 불가 현황' 초기화 실패(이어서 진행): {e}")
 
     try:
         # 0) 이전 실행 상태 로드
@@ -130,7 +167,15 @@ def run(
         log.info(f"중복 제거 후 {len(articles)}건 (신규 기사)")
 
         if not articles:
-            log.info("새로운 기사가 없습니다. 파이프라인 종료")
+            log.info("새로운 기사가 없습니다.")
+            # 수집이 비어도 정리는 돌린다. 대기 카드 정리와 보관 정리는
+            # 어제까지 쌓인 것의 뒤처리라 오늘 신규 기사 수와 무관하다.
+            if not dry_run and not no_notion:
+                try:
+                    _cleanup(resolve_data_source_id())
+                except Exception as e:
+                    log.warning(f"정리 단계를 건너뜁니다(Notion 접근 실패): {e}")
+            log.info("파이프라인 종료")
             return
 
         # 이번 수집분의 최신 발행시각 → 다음 실행의 '이전 수집일' 기준
@@ -242,22 +287,9 @@ def run(
         elif not dry_run:
             log.info("Notion 저장을 하지 않아 처리 이력을 남기지 않습니다 (다음 실행에서 다시 수집)")
 
-        # 12) 보관 정리
+        # 12) 보관 정리 (묵은 대기 카드 → 보류 → 휴지통)
         if use_notion:
-            # 12-1) '⚠️ 승인 불가' 로 방치된 카드를 '보류'로 넘기고 슬롯을 비운다.
-            #       슬롯은 열 칸뿐이라, 거부된 카드가 붙들고 있으면 이번 회차
-            #       배정분이 들어갈 자리가 없다. 보관 정리보다 먼저 돌려야
-            #       그 결과가 같은 실행의 묶음 배정에 반영된다.
-            try:
-                cleanup_rejected(data_source_id)
-            except Exception as e:
-                log.warning(f"거부 카드 정리 실패(다음 실행에서 재시도): {e}")
-
-            # 12-2) 보관 기간이 지난 페이지를 휴지통으로
-            try:
-                cleanup_expired(data_source_id)
-            except Exception as e:
-                log.warning(f"보관 정리 실패(다음 실행에서 재시도): {e}")
+            _cleanup(data_source_id)
 
         log.info("파이프라인 종료")
     except Exception as e:
