@@ -1,4 +1,4 @@
-"""실행 간 상태 저장 (data/state.json).
+"""실행 간 상태 저장 (state/state.json).
 
 담는 것은 두 가지다.
   last_collected_at  마지막으로 수집한 기사의 발행 시각
@@ -16,16 +16,30 @@ processed_urls 를 따로 두는 이유:
 
 URL 은 collect_workflow 가 정규화(공백·끝 슬래시 제거)해서 넘긴다.
 여기서 또 손대면 두 곳의 규칙이 어긋날 때 원인을 찾기 어렵다.
+
+왜 data/ 가 아니라 state/ 인가:
+  GitHub Actions 는 실행마다 새 컨테이너다. 러너가 갱신한 파일은
+  커밋되지 않으면 컨테이너와 함께 사라진다. 워크플로들은 실행 뒤
+  `git add state/` 로 상태를 남기므로, 그 밖에 있으면 갱신분이 버려진다.
+
+    실측(2026-09-14): data/state.json 의 마지막 커밋이 사람이 만든
+    것뿐이었다. Actions 수집이 며칠째 같은 지점에서 다시 시작하고 있었고,
+    날짜 필터와 중복 제거가 매번 초기 상태로 돌아 이미 처리한 기사를
+    다시 긁고 있었다(Notion 의 skip_duplicates 가 막아 결과물은 멀쩡해
+    드러나지 않았다).
+
+  stock_usage.json · model_state.json 과 같은 자리에 둔다. 성격이 같은
+  파일이 흩어져 있으면 워크플로마다 add 대상을 빠뜨릴 자리가 생긴다.
 """
 import json
 from datetime import datetime
 
-from config.settings import DATA_DIR, KST
+from config.settings import KST, STATE_DIR
 from core.logger import get_logger
 
 log = get_logger(__name__)
 
-STATE_PATH = DATA_DIR / "state.json"
+STATE_PATH = STATE_DIR / "state.json"
 
 # 보관할 URL 개수 상한. 무한히 쌓이면 파일이 커지고 매 실행 로딩이 느려진다.
 # 하루 100건 안팎이므로 이 값이면 두 달 넘게 커버한다.

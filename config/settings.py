@@ -23,9 +23,9 @@ for _d in (RAW_DIR, PROCESSED_DIR, DRAFT_DIR, IMAGE_DIR, QUALITY_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
 # ── 실행 간 유지되는 상태 (버전 관리 대상) ──────────────
-# data/ 는 .gitignore 로 통째로 빠진다. 로컬에서는 파일이 그대로 남으니
-# 문제가 없지만, GitHub Actions 는 실행마다 새 컨테이너라 data/ 에 둔
-# 상태가 매번 초기화된다. 그러면
+# data/ 는 필요한 것만 추적한다(.gitignore 에서 하위 항목을 개별 제외).
+# GitHub Actions 는 실행마다 새 컨테이너라, 추적되지 않는 것은 매번
+# 초기화된다. 그러면
 #   - 스톡 재사용 간격(14일)이 무력화돼 같은 사진이 매일 나오고
 #   - 모델 소진 기록이 사라져 한도가 끝난 모델에 매번 다시 들이받는다
 # 그래서 커밋할 수 있는 자리로 뺀다. 워크플로가 실행 끝에 이 폴더만

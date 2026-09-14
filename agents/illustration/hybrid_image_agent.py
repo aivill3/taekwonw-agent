@@ -52,7 +52,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from config.settings import DATA_DIR, IMAGE_DIR, KST, STATE_DIR
+from config.settings import BASE_DIR, DATA_DIR, IMAGE_DIR, KST, STATE_DIR
 from core.logger import get_logger
 from agents.illustration.article_analyzer import ArticleAnalysis, analyze
 from agents.illustration.planned_image_agent import _hard_filter
@@ -303,6 +303,40 @@ def credit_line(credits: list[str]) -> str:
     return ""
 
 
+def _stock_path(src: str | Path) -> Path:
+    """인덱스에 적힌 경로를 지금 이 OS 의 경로로 바꾼다.
+
+    인덱스는 만들 때의 구분자를 그대로 적는다. Windows 에서 만들면
+    'data\\stock\\x.jpg' 가 되는데, Linux 에서는 이게 경로가 아니라
+    역슬래시가 든 파일명 하나로 읽혀 반드시 FileNotFoundError 가 난다.
+    파일이 제자리에 있어도 소용없다.
+
+        실측(2026-09-14 Actions): 스톡 매칭은 4자리 모두 성공했는데
+        복사에서 전부 죽어 삽화 0장으로 끝났다.
+
+    상대 경로는 BASE_DIR 기준으로 푼다. 지금은 러너의 작업 디렉터리가
+    저장소 루트라 결과가 같지만, cwd 가 달라져도 깨지지 않게 명시해 둔다.
+
+    구분자를 바꿔도 디렉터리가 맞는다는 보장은 없다. Windows 절대경로
+    'C:/dev/.../x.jpg' 는 Linux 에서 절대경로가 아니라 BASE_DIR 밑으로
+    붙어 버린다. 그래서 파일이 없으면 파일명만 떼어 정규 위치에서 한 번
+    더 찾는다. 그래도 없으면 원래 경로를 돌려준다 — _copy_stock 의 실패
+    로그가 '있어야 할 자리'를 가리켜야 원인을 짚을 수 있다.
+
+    바꾸는 것은 파일을 여는 시점뿐이다. 재사용 이력(USAGE_LOG)의 키는
+    인덱스에 적힌 문자열 그대로 둔다 — 키까지 정규화하면 기존 기록과
+    맞지 않아 재사용 간격이 한 번 무력화된다.
+    """
+    path = Path(str(src).replace("\\", "/"))
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    if path.exists():
+        return path
+
+    alt = DATA_DIR / "stock" / path.name
+    return alt if alt.exists() else path
+
+
 def _copy_stock(src: Path, dest: Path) -> Path | None:
     """스톡 원본을 삽화 폴더로 복사한다.
 
@@ -443,7 +477,7 @@ def generate_for_sections(
             src, score = pick
             log.info(f"삽화 {idx + 1}/{total} 스톡 ({score:.3f}) — {heading[:24]}")
             log.info(f"  원본: {src}")
-            path = _copy_stock(Path(src), out)
+            path = _copy_stock(_stock_path(src), out)
             if path:
                 generation = {
                     "source": "stock",
@@ -515,7 +549,7 @@ def generate_for_sections(
                 continue
             src, score = hit
             out = IMAGE_DIR / f"{slug}_{i + 1}.png"
-            path = _copy_stock(Path(src), out)
+            path = _copy_stock(_stock_path(src), out)
             if not path:
                 continue
             log.info(f"삽화 {i + 1}/{total} 스톡 대체 ({score:.3f}) — {headings[i][:24]}")
