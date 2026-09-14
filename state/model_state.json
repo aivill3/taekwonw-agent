@@ -1,8 +1,8 @@
 {
-  "quota_day": "2026-09-01",
+  "quota_day": "2026-09-13",
   "exhausted": [
-    "gemini-3.5-flash"
+    "gemini-flash-latest"
   ],
-  "updated": "2026-09-02T10:02:18+09:00",
+  "updated": "2026-09-14T12:56:22+09:00",
   "last_reason": "일일 한도 소진: GenerateRequestsPerDayPerProjectPerModel-FreeTier"
 }
