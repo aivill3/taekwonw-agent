@@ -938,8 +938,12 @@ def insert_images_at_slots(page_id: str, images: dict[int, dict]) -> int:
     생성(로컬 diffusers 등)이 끝난 뒤에 나중에 붙이기 위한 것이다.
 
     숫자만 있는 문단 블록이 이미지 자리다. 앞에서부터 세어 images 의 키와
-    맞춘다. 자리 번호 문단은 지우지 않고 그 '뒤에' 이미지를 넣는다.
-    이미지를 못 구한 칸이 어디인지 사람이 알아볼 수 있어야 하기 때문이다.
+    맞춘다. 이미지를 넣은 뒤에는 그 번호 문단을 지운다 — 자리를 채웠으면
+    안내가 끝난 것이고, 남겨 두면 발행본에 숫자가 그대로 나간다.
+
+    못 채운 자리의 번호는 남긴다. 그 숫자가 '여기가 비었다'는 유일한
+    표시다. 발행 시점 경로(append_illustrated_draft)도 같은 규칙이라,
+    어느 쪽으로 삽화가 들어갔든 결과가 같다.
 
     반환: 실제로 삽입된 이미지 수
     """
@@ -985,11 +989,42 @@ def insert_images_at_slots(page_id: str, images: dict[int, dict]) -> int:
             inserted += 1
         except Exception as e:
             log.warning(f"이미지 삽입 실패: {e}")
+            continue
+
+        # 삽입에 성공한 뒤에만 번호를 지운다. 순서를 바꾸면 삽입이 실패했을 때
+        # 자리 표시까지 사라져, 어디가 비었는지 알 수 없게 된다.
+        try:
+            _request("DELETE", f"/blocks/{block_id}")
+        except Exception as e:
+            log.warning(f"자리 번호 삭제 실패(숫자가 남습니다): {e}")
     return inserted
 
 
 RE_IMAGE_SLOT = re.compile(r"^\d{1,2}$")
 RE_BLOCK_MARKER = re.compile(r"/\*\s*(소제목|본문|인용구)\s*\*/")
+
+
+def _insert_slot_number(page_id: str, after_block_id: str, number: int) -> None:
+    """지정 블록 바로 뒤에 자리 번호 문단을 넣는다.
+
+    delete_draft_images 가 삽화를 걷어낼 때 그 자리를 표시하려고 쓴다.
+    insert_images_at_slots 가 이 문단을 앵커로 찾으므로, 형식은
+    RE_IMAGE_SLOT 과 맞아야 한다(숫자만 있는 문단).
+    """
+    _request(
+        "PATCH",
+        f"/blocks/{page_id}/children",
+        json={
+            "children": [{
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [{"type": "text", "text": {"content": str(number)}}]
+                },
+            }],
+            "position": {"type": "after_block", "after_block": {"id": after_block_id}},
+        },
+    )
 
 
 def delete_draft_images(page_id: str) -> int:
@@ -999,13 +1034,26 @@ def delete_draft_images(page_id: str) -> int:
     아래만 대상으로 한다 — 그 위는 원문 기사 영역이라 사람이 붙여 둔 사진이
     있을 수 있고, 그것까지 지우면 복구할 방법이 없다.
 
-    숫자 자리 문단은 건드리지 않는다. 그 자리가 남아 있어야 다음 삽입이
-    같은 위치를 찾는다.
+    지운 자리에는 번호 문단을 되살린다. 삽화가 들어가면서 번호가 사라졌기
+    때문에, 그냥 지우기만 하면 다음 삽입이 앵커를 찾지 못해 0장으로 끝난다
+    (발행 시점에 삽화가 들어간 페이지에서는 예전부터 그랬다).
+
+    번호는 문서 순서로 다시 센다. 채운 자리는 이미지 블록으로, 못 채운
+    자리는 번호 문단으로 남아 있으므로, 둘을 함께 세면 원래 순번이 나온다.
+
+    한 자리에는 번호 문단이나 이미지 중 하나만 있다고 본다. 삽입할 때
+    번호를 지우므로 둘이 함께 있을 수 없다.
+
+    2026-09-14 이전에 만들어진 페이지는 예외다. 그때는 번호를 남기고 그
+    뒤에 이미지를 넣어서 한 자리에 두 블록이 있고, 여기를 --redo 로
+    돌리면 순번이 두 배로 불어난다(4자리 글에서 1,2,2,4,3,6,4,8).
+    그런 페이지는 손으로 번호를 정리한 뒤 돌린다.
 
     반환: 지운 이미지 수
     """
     started = False
     deleted = 0
+    slot_no = 0
 
     for b in list_blocks(page_id):
         btype = b.get("type", "")
@@ -1016,9 +1064,21 @@ def delete_draft_images(page_id: str) -> int:
             if DRAFT_HEADING in text:
                 started = True
             continue
-        if not started or btype != "image":
+        if not started:
             continue
+
+        # 아직 못 채운 자리. 번호가 그대로 있으니 순번만 세고 넘어간다.
+        if btype == "paragraph" and RE_IMAGE_SLOT.match(_block_text(b).strip()):
+            slot_no += 1
+            continue
+        if btype != "image":
+            continue
+
+        slot_no += 1
         try:
+            # 번호를 먼저 넣고 이미지를 지운다. 순서를 바꾸면 되살리기가
+            # 실패했을 때 자리가 통째로 사라진다.
+            _insert_slot_number(page_id, b["id"], slot_no)
             _request("DELETE", f"/blocks/{b['id']}")
             deleted += 1
         except Exception as e:

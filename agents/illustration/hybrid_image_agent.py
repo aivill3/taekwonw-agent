@@ -230,6 +230,23 @@ def _load_sources() -> dict:
     return _sources_cache
 
 
+def _basename(path: str) -> str:
+    """경로에서 파일명만 떼어낸다. Windows 구분자로 적혀 있어도 동작한다.
+
+    Path('data\\stock\\x.jpg').name 은 Linux 에서 문자열 전체를 돌려준다.
+    역슬래시가 경로 구분자가 아니기 때문이다. 그러면 stock_sources.json
+    조회도, 파일명 규칙 추정도 모두 빗나가 출처 문구가 통째로 빈다.
+
+        실측(2026-09-14 Actions): 삽화는 4장 다 들어갔는데 '출처: Pexels'
+        가 한 줄도 안 붙었다. 사진은 제자리에 있었고 이름도 pexels- 로
+        시작했는데, 비교 대상이 'data\\stock\\pexels-....jpg' 였다.
+
+    _stock_path() 와 달리 파일이 실제로 있는지는 보지 않는다. 출처는
+    이름만으로 판정하는 것이고, 원본이 지워진 뒤에도 답이 나와야 한다.
+    """
+    return Path(str(path).replace("\\", "/")).name
+
+
 def _credit_from_name(name: str) -> str:
     """파일명으로 출처를 추정한다.
 
@@ -265,7 +282,7 @@ def credit_for(generation: dict | None) -> str:
     if not original:
         return ""
 
-    name = Path(original).name
+    name = _basename(original)
     meta = _load_sources().get(name)
     if not meta:
         # 기록이 없는 사진. 파일명으로 추정하되, 그것도 안 되면
