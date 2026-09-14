@@ -47,8 +47,8 @@ Notion 보드는 "이 칸에 4개까지만"을 막지 못한다. 다섯 번째 �
     제외    상태만 '보류'로
     미배정  건드리지 않는다
 
-규칙을 어긴 슬롯은 통째로 건너뛴다. 상태를 바꾸지 않으므로 보드에서
-고친 뒤 다시 확정하면 된다.
+규칙을 어긴 슬롯은 통째로 건너뛴다. 카드는 '선정됨' 으로 돌아가고
+슬롯은 '대기' 로 비워져, 다음 content 실행에서 새 기사와 다시 묶인다.
 
 대기와 제외를 나눈 이유
 ---------------------
@@ -63,12 +63,24 @@ Notion 보드는 "이 칸에 4개까지만"을 막지 못한다. 다섯 번째 �
 
 판정 문구
 --------
-확정하면서 거부된 칸에는 '⚠️ 승인 불가' 를, 짝이 부족한 '대기' 칸에는
-'⏳ 대기' 를 카드에 써 넣는다. 통과한 카드는 묶음ID 가 붙는 것이 곧
-결과이므로 칩을 지운다.
+거부된 칸의 카드는 '대기' 로 내려가면서 '⏳ 대기' 칩을 받는다. 통과한
+카드는 묶음ID 가 붙는 것이 곧 결과이므로 칩을 지운다.
 
   단독1  →  묶음ID 부여 (칩 없음) → publish 로 이어짐
-  묶음2  →  '선정됨' 으로 복귀 + ⚠️ 승인 불가
+  묶음2  →  '선정됨' + '대기' 칸으로 이동 + ⏳ 대기
+
+거부 사유는 카드가 아니라 보드 밑 '📋 승인 불가 현황' 콜아웃에 적는다.
+카드마다 '⚠️ 승인 불가' 를 붙여 봐야 '왜' 그랬는지는 담기지 않고, 카드가
+대기로 내려간 뒤에는 그 칩이 지금 상태를 잘못 말하기 때문이다.
+
+  📋 승인 불가 현황 — 2026-09-09
+
+  16:52 기준
+  ❌ 묶음1 — 묶음 슬롯에 2건 (4건이어야 함 — 2건 부족)
+      · 극동대, '감곡 K-컬처 페스티벌' 9월 12~14일 개최…유학생
+
+하루 동안 회차별로 이어붙고, 다음 날 아침 collect 가 reset_notice() 로
+비운다. NOTION_BOARD_PAGE_ID 가 비어 있으면 이 기록은 건너뛴다.
 
 이렇게 하는 이유는 실행을 한 번으로 끝내기 위해서다. 사람이 로그를 보지
 않는다는 전제에서는, 왜 안 넘어갔는지가 보드에 남아야 한다. 예전에는
@@ -84,7 +96,7 @@ Notion 은 조건부 문구를 실시간으로 띄우지 못하므로, 카드를
 """
 from datetime import datetime
 
-from config.settings import KST
+from config.settings import KST, NOTION_BOARD_PAGE_ID
 from core.logger import get_logger, setup
 from tools.slack_notifier import notify_failure
 from tools.notion_store import (
@@ -101,10 +113,12 @@ from tools.notion_store import (
     STATUS_DEFAULT,
     STATUS_HOLD,
     STATUS_REQUESTED_DRAFT,
+    append_notice,
     confirm_bundle,
     ensure_schema,
     fetch_by_status,
     resolve_data_source_id,
+    set_bundle,
     set_bundle_id,
     set_bundle_state,
     update_status,
@@ -203,6 +217,33 @@ def _next_bundle_ids(existing: list[str], count: int) -> list[str]:
             continue
         out.append(f"{today}-{n:02d}")
     return out
+
+
+def _notice_entry(
+    rejected: dict[str, list[dict]],
+    results: dict[str, tuple[bool, str]],
+) -> str:
+    """콜아웃에 이어붙일 이번 회차 거부 내역.
+
+    날짜 헤더는 append_notice() 가 붙이므로 여기서는 시각만 적는다.
+    하루에 confirm 이 여러 번 돌면 시각별로 쌓여, 어느 회차의 판정인지
+    구분된다.
+
+        16:52 기준
+        ❌ 묶음1 — 묶음 슬롯에 2건 (4건이어야 함 — 2건 부족)
+            · 극동대, '감곡 K-컬처 페스티벌' 9월 12~14일 개최…유학생
+    """
+    now = f"{datetime.now(KST):%H:%M}"
+    lines = [f"{now} 기준"]
+
+    for slot in sorted(rejected):
+        _passed, reason = results[slot]
+        lines.append(f"❌ {slot} — {reason}")
+        for m in rejected[slot]:
+            # 44자에서 자른다. 제목이 길면 콜아웃이 화면을 넘어간다.
+            lines.append(f"    · {m['title'][:44]}")
+
+    return "\n".join(lines)
 
 
 def run(*, dry_run: bool = False, check_only: bool = False) -> None:
@@ -345,24 +386,40 @@ def run(*, dry_run: bool = False, check_only: bool = False) -> None:
                 confirmed += 1
                 log.info(f"확정 [{slot}] -> {bid} · {len(members)}건 — {reason}")
 
-        # 규칙을 어긴 칸은 '선정됨' 으로 되돌린다.
+        # 규칙을 어긴 칸은 '선정됨' 으로 되돌리고 '대기' 로 옮긴다.
         #
         # '초안요청' 으로 두면 폴링이 30분마다 같은 검사를 반복하고,
         # 사람은 보드에서 그 카드를 다시 만질 수 없다(필터가 '선정됨'이라
-        # 화면에서 사라진다). 되돌리면 제자리로 돌아와 고친 뒤 버튼을
-        # 다시 누를 수 있다. 왜 되돌아왔는지는 판정 칩에 남는다.
+        # 화면에서 사라진다). 되돌리면 제자리로 돌아온다.
+        #
+        # 슬롯까지 비우는 이유
+        # -------------------
+        # 예전에는 슬롯(예: 묶음1)에 그대로 두고 카드에 '⚠️ 승인 불가'
+        # 칩만 붙였다. 그런데 2건짜리가 '묶음1' 에 남아 있으면 보드가
+        # 거짓말을 한다 — 그 칸은 '이 4건이 한 편이 된다' 는 뜻이다.
+        # 짝이 부족한 것은 대기해야 할 것이지 묶여 있을 것이 아니다.
+        #
+        # 대기로 내려가면 다음 content 실행에서 group_articles() 가
+        # 새로 들어온 기사와 함께 다시 묶는다. 4건이 채워지면 정상
+        # 슬롯으로 올라가고, 그때까지는 대기에 머문다. 슬롯이 열 칸뿐이라
+        # 거부된 카드가 계속 붙들고 있으면 다음 배정이 막히기도 한다.
+        rejected_slots = {
+            slot: members for slot, members in slots.items() if not results[slot][0]
+        }
+
         reverted = 0
-        for slot, members in slots.items():
-            if results[slot][0]:
-                continue
+        moved: list[dict] = []
+        for slot, members in rejected_slots.items():
             for m in members:
                 try:
                     update_status(m["page_id"], STATUS_DEFAULT)
+                    set_bundle(m["page_id"], BUNDLE_WAIT)
+                    moved.append(m)
                     reverted += 1
                 except Exception as e:
                     log.warning(f"되돌리기 실패 ({m['title'][:30]}): {e}")
 
-        # 슬롯이 없거나 '대기' 칸인 것도 마찬가지로 되돌린다.
+        # 슬롯이 없거나 이미 '대기' 칸인 것도 마찬가지로 되돌린다.
         # 버튼이 눌렸지만 아직 배치가 끝나지 않은 카드들이다.
         for it in wait + unassigned:
             try:
@@ -371,12 +428,25 @@ def run(*, dry_run: bool = False, check_only: bool = False) -> None:
             except Exception as e:
                 log.warning(f"되돌리기 실패 ({it['title'][:30]}): {e}")
 
-        # 판정 칩 — 왜 남았는지 보드에서 읽을 수 있어야 한다.
-        rejected_slots = {
-            slot: members for slot, members in slots.items() if not results[slot][0]
-        }
-        if rejected_slots or wait or unassigned:
-            _write_states(rejected_slots, wait, [], unassigned, results)
+        # 판정 칩 — 대기로 옮긴 카드는 '⏳ 대기' 를 받는다. 칸과 칩이
+        # 어긋나면 보드를 읽는 사람이 헷갈리고, 직전 회차의 '⚠️ 승인 불가'
+        # 칩이 남아 있으면 지금 상태를 잘못 말한다.
+        #
+        # 거부 사유는 카드가 아니라 콜아웃에 적는다. 카드마다 같은 문구를
+        # 붙여 봐야 '왜' 그랬는지는 담기지 않기 때문이다.
+        if wait or unassigned or moved:
+            _write_states({}, wait + moved, [], unassigned, results)
+
+        # 보드 밑 '📋 승인 불가 현황' 콜아웃에 이번 회차 내역을 이어붙인다.
+        # 거부가 없으면 건드리지 않는다 — 앞 회차 내역이 그대로 남아야
+        # 하루 동안 무슨 일이 있었는지 보인다. 비우는 것은 collect 의 일이다.
+        if rejected_slots and NOTION_BOARD_PAGE_ID:
+            try:
+                append_notice(
+                    NOTION_BOARD_PAGE_ID, _notice_entry(rejected_slots, results)
+                )
+            except Exception as e:
+                log.warning(f"승인 불가 현황 기록 실패: {e}")
 
         # '제외' 칸만 상태를 '보류'로 옮긴다. 후보 목록에서 빠지고,
         # 되살리려면 Notion 에서 '선정됨'으로 되돌리면 된다.

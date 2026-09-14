@@ -441,7 +441,7 @@ def find_origin_toggle_id(page_id: str) -> str | None:
             return b["id"]
     return None
 
-NOTICE_MARKER = "📋 승인 불가 현황"
+NOTICE_MARKER = "승인 불가 현황"
 
 
 def find_notice_block_id(page_id: str) -> str | None:

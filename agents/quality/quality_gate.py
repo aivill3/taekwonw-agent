@@ -19,9 +19,18 @@
    writer.py가 실제로 지시받은 값(제목 25~50자, 섹션=소주제 수)으로 검사한다.
    SeoConfig 기본값(제목 15~40자)은 네이버 실측치라 여기 쓰면 안 된다.
 
-3. 네이버 전환 거리 — Format.NAVER_BLOG 기준 같은 텍스트 재검사
-   숫자 챕터 0개, 헤딩 다수, 20자 이하 줄 비율 낮음이 나올 것이다.
-   이 격차의 크기가 전환 비용의 대리 지표다.
+3. 형식 준수 감시 — Format.NAVER_BLOG 기준 같은 텍스트 재검사
+   원래는 "마크다운 초안을 네이버 형식으로 옮기려면 얼마나 고쳐야 하나"를
+   재는 전환 거리 지표였다. 그 전환은 끝났다 — draft_prompt 가 처음부터
+   네이버 평문을 지시하고 draft_postprocessor 가 마크다운 잔재를 걷어낸다.
+
+     실측(2026-09-12): 헤딩 0개 · 챕터 4개 · 20자 이하 줄 98%(목표 90%).
+     세 지표 모두 '전환 완료'를 가리킨다.
+
+   그래서 역할을 바꿨다. 지금은 그 형식이 무너지지 않았는지 보는 감시
+   지표다. 헤딩이 0개가 아니거나 챕터가 소주제 수에 못 미치면 프롬프트나
+   후처리가 조용히 깨진 것이다. metrics.jsonl 에 누적되므로 어느 날부터
+   틀어졌는지 되짚을 수 있다.
 
 측정 시점
 --------
@@ -38,12 +47,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+import re
 from datetime import datetime
 from typing import Any
 
 from config.settings import DATA_DIR, KST
 from core.logger import get_logger
-from core.text_metrics import clean_for_metrics
 from agents.quality import CheckConfig, QualityChecker, format_report
 from agents.quality.quality_models import QualityReport, Severity
 from agents.quality.seo_checker import Format, SeoChecker, SeoConfig
@@ -69,6 +78,9 @@ class DraftMetrics:
     model: str
     report: QualityReport
     markdown_chars: int  # len(markdown) — writer.py 기준
+    # 형식 준수 지표. measure_format_compliance() 가 채운다.
+    # 이름이 'gap'인 것은 전환 거리를 재던 시절의 잔재다. metrics.jsonl 에
+    # 같은 키로 쌓여 있어 바꾸면 과거 기록과 조인이 끊기므로 유지한다.
     naver_gap: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -120,18 +132,20 @@ class DraftMetrics:
             "banned_words": [h.matched for h in r.banned_words[:20]],
             # --- 경고 ---
             "warnings": r.warnings,
-            # --- 네이버 전환 거리 ---
+            # --- 형식 준수 (키 이름은 과거 기록과의 호환을 위해 유지) ---
             "naver_gap": self.naver_gap,
         }
 
 
-# 측정 대상 텍스트를 만드는 일(마커·CTA·제로폭 공백 제거)은
-# core/text_metrics.clean_for_metrics 가 단독으로 책임진다.
-#
-# 예전에는 여기에 _MARKER 와 strip_markers 가 따로 있었다. 그러면 같은
-# 정리 작업을 작성기와 검사기가 각자 조립하게 되고, 한쪽 정규식만 고쳐도
-# 두 기준이 조용히 어긋난다. 실제로 CTA 175자와 마커 약 180자가 어긋나
-# 프롬프트 지시(1,900자)와 검사 상한이 355자 벌어져 있었다.
+# 발행용 블록 마커. 사람이 서식을 적용할 위치 표시일 뿐 글의 일부가 아니다.
+# 남겨두면 Kiwi가 '본문'을 실제 단어로 세어(실측: 주요 키워드 7~8위) 형태소
+# 총량·어휘 다양성·키워드 밀도가 모두 왜곡된다.
+_MARKER = re.compile(r"/\*\s*(?:소제목|본문|인용구)\s*\*/")
+
+
+def strip_markers(text: str) -> str:
+    """측정 전에 블록 마커를 제거한다. 줄 구조는 건드리지 않는다."""
+    return "\n".join(_MARKER.sub("", line).rstrip() for line in text.split("\n"))
 
 
 def build_seo_config(item: dict, markdown: str) -> SeoConfig:
@@ -172,25 +186,39 @@ def build_seo_config(item: dict, markdown: str) -> SeoConfig:
     )
 
 
-def measure_naver_gap(markdown: str, keyword: str | None) -> dict[str, Any]:
-    """같은 텍스트를 네이버 형식 기준으로 재검사해 전환 거리를 잰다.
+def measure_format_compliance(markdown: str, keyword: str | None) -> dict[str, Any]:
+    """같은 텍스트를 네이버 형식 기준으로 재검사해 형식 준수도를 잰다.
 
-    지금은 마크다운이므로 대부분 미달로 나오는 게 정상이다.
-    중요한 건 통과 여부가 아니라 격차의 크기다. 예를 들어 20자 이하 줄
-    비율이 30%면 줄바꿈 규칙만 적용해도 상당 부분 해결된다는 뜻이고,
-    5%면 문장 구조부터 다시 써야 한다는 뜻이다.
+    기대하는 값은 아래와 같다. 벗어나면 프롬프트나 후처리가 깨진 것이다.
+
+        heading_count      0    — draft_postprocessor 가 '## ' 를 걷어낸다
+        bullet_count       0    — 불릿 기호도 같은 단계에서 제거된다
+        numeric_chapters   소주제 수와 같음
+        short_line_ratio   0.90 이상 — 한 줄 20자 규칙
+
+    통과/미달 판정은 하지 않는다. 값을 남겨 두는 것이 목적이고, 판단은
+    metrics.jsonl 을 훑어보는 사람이 한다.
     """
     checker = SeoChecker(SeoConfig(format=Format.NAVER_BLOG, min_images=0))
     r = checker.check(markdown, keyword)
     return {
-        "numeric_chapters": r.chapter_count,  # 마크다운 초안에선 0일 것
-        "heading_count": r.heading_count,  # 제거해야 할 '## ' 개수
+        # 챕터 수. 예전에는 `1. 첫 번째는` 처럼 줄머리 숫자로 챕터를 찾아
+        # 'numeric' 이라 불렀다. 지금 SeoChecker 는 `/* 소제목 */` 마커로
+        # 세고(챕터 줄의 숫자는 draft_postprocessor 가 오히려 제거한다),
+        # 숫자만 있는 줄은 이미지 자리라 챕터에서 제외한다.
+        # 키 이름은 metrics.jsonl 의 과거 기록과 호환되도록 유지한다.
+        "numeric_chapters": r.chapter_count,
+        "heading_count": r.heading_count,  # 남아 있으면 안 되는 '## ' 개수
         "bullet_count": r.bullet_count,
         "short_line_ratio": r.short_line_ratio,  # 20자 이하 줄 비율
         "longest_line": r.longest_line,
         "line_count": r.line_count,
         "body_chars": r.body_chars,
     }
+
+
+# 예전 이름. 외부에서 부르는 곳이 남아 있어도 깨지지 않게 남겨 둔다.
+measure_naver_gap = measure_format_compliance
 
 
 def _keyword_of(item: dict) -> str | None:
@@ -224,14 +252,8 @@ def measure_all(items: list[dict]) -> list[DraftMetrics]:
             continue
         try:
             keyword = _keyword_of(item)
-            # 측정 대상 정리는 core/text_metrics 가 단독으로 책임진다.
-            # 마커·CTA·제로폭 공백을 여기서 따로 조립하면, 작성기가 쓰는
-            # 기준(prose_chars)과 어긋나도 아무도 모른다.
-            #
-            # 이 정리를 거치면 report.seo.body_chars 가 prose_chars 와
-            # 같은 값이 되어, 임계값 보정 없이 프롬프트 지시를 그대로
-            # 상한으로 쓸 수 있다.
-            measured = clean_for_metrics(markdown)
+            # 마커를 뺀 텍스트로 잰다. 줄 수·분량 지표도 마커 없는 상태가 맞다.
+            measured = strip_markers(markdown)
             report = checker.check(
                 measured, keyword, seo_config=build_seo_config(item, measured)
             )
@@ -242,7 +264,7 @@ def measure_all(items: list[dict]) -> list[DraftMetrics]:
                     model=item.get("model", ""),
                     report=report,
                     markdown_chars=len(markdown),
-                    naver_gap=measure_naver_gap(measured, keyword),
+                    naver_gap=measure_format_compliance(measured, keyword),
                 )
             )
         except Exception as e:
@@ -303,11 +325,15 @@ def format_summary(metrics: list[DraftMetrics]) -> str:
     warn_total = sum(len(m.report.warnings) for m in metrics)
     lines.append(f"  경고 {warn_total}건")
 
-    # 네이버 전환 거리
-    lines.append("  ── 네이버 형식 전환 거리 ──")
+    # 형식 준수 — 기대값을 함께 적어 둔다. 숫자만 있으면 정상인지 알 수 없다.
+    lines.append("  ── 네이버 형식 준수 ──")
     lines.append(
-        f"  제거할 '## ' 헤딩 평균 {avg(lambda m: m.naver_gap.get('heading_count', 0)):.1f}개"
-        f" / 숫자 챕터 {avg(lambda m: m.naver_gap.get('numeric_chapters', 0)):.1f}개"
+        f"  남은 '## ' 헤딩 평균 {avg(lambda m: m.naver_gap.get('heading_count', 0)):.1f}개 (기대 0)"
+        f" / 불릿 {avg(lambda m: m.naver_gap.get('bullet_count', 0)):.1f}개 (기대 0)"
+    )
+    lines.append(
+        f"  챕터 평균 {avg(lambda m: m.naver_gap.get('numeric_chapters', 0)):.1f}개"
+        f" (기대 = 소주제 수)"
     )
     lines.append(
         f"  20자 이하 줄 비율 {avg(lambda m: m.naver_gap.get('short_line_ratio', 0)):.0%}"
@@ -322,6 +348,7 @@ def detail_reports(metrics: list[DraftMetrics]) -> str:
     for m in metrics:
         blocks.append(f"───── {m.title} ─────\n{format_report(m.report)}")
     return "\n\n".join(blocks)
+
 
 def notion_summary(m: DraftMetrics) -> str:
     """노션 '형태소' 속성에 넣을 요약.

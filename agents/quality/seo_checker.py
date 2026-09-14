@@ -13,14 +13,21 @@ prompts/draft/writing_guide.md 의 체크리스트 중 기계로
 두 가지 형식을 지원한다.
 
     NAVER_BLOG (기본)
-        네이버 블로그 에디터용. 숫자 챕터로 구분하고 한 줄을 15~20자로 끊는다.
+        네이버 블로그 에디터용. `/* 소제목 */` 마커로 챕터를 구분하고
+        한 줄을 15~20자로 끊는다.
         마크다운 헤딩과 불릿은 권장이 아니라 **금지** 대상이다.
+
+        예전에는 줄머리 숫자(`1. 첫 번째는`)로 챕터를 찾았다. 그런데
+        이미지 자리도 숫자 한 줄이라 둘이 섞여 읽기 어려웠고, 지금은
+        챕터에서 숫자를 뺐다(draft_postprocessor.number_chapters 가
+        이름과 반대로 번호를 제거한다). 숫자 패턴은 옛 초안 호환용으로만
+        남아 있다 — _extract_chapters() 3순위.
 
     MARKDOWN
         일반 마크다운. ## 소제목과 ![]() 이미지를 센다.
 
 태권월드 기존 발행 글 2편을 측정한 결과 마크다운 헤딩 0개, 불릿 0개,
-줄 길이 평균 12자(98%가 20자 이하), 숫자 챕터 4개였다.
+줄 길이 평균 12자(98%가 20자 이하), 챕터 4개였다.
 기본값을 NAVER_BLOG로 둔 이유다.
 
 **원문을 대상으로 한다.** strip_markdown()을 거치면 헤딩·이미지 구문과
@@ -39,8 +46,12 @@ from typing import Any
 
 from config.quality_config import Format, SeoConfig
 
-# 숫자 챕터. "1. 첫 번째는", "2.", "3 " 등 줄 첫머리의 숫자를 잡는다.
+# 옛 형식의 숫자 챕터. "1. 첫 번째는", "2.", "3 " 등 줄 첫머리의 숫자를 잡는다.
 # 뒤에 문자가 이어져도 되지만, 연·월·일 같은 날짜 표기는 제외한다.
+#
+# 현행 초안은 챕터에 번호를 붙이지 않는다. 이 패턴은 _extract_chapters() 의
+# 3순위(옛 초안 호환)에서만 쓰이며, 새 초안을 검사할 때 여기까지 내려오면
+# 마커와 순서 표현이 둘 다 없다는 뜻이다.
 _NUM_CHAPTER = re.compile(r"^\s*(\d{1,2})[.)]?(?:\s|$)(?!\s*[년월일원명개])", re.MULTILINE)
 
 _BULLET = re.compile(r"^\s{0,3}[-*•]\s+", re.MULTILINE)
@@ -158,7 +169,7 @@ class SeoChecker:
             return marked
 
         # 2순위: 순서 표현. 측정 단계에서 마커를 걷어낸 텍스트가 들어오므로
-        # (core.text_metrics.clean_for_metrics) 마커 없이도 챕터를 찾을 수 있어야 한다.
+        # (quality_gate.strip_markers) 마커 없이도 챕터를 찾을 수 있어야 한다.
         ordinal = [
             line.strip()
             for line in _effective_lines(text)
@@ -249,9 +260,7 @@ class SeoChecker:
             r.warnings.append(
                 f"제목이 깁니다: {r.title_length}자 — 모바일에서 뒷부분이 잘립니다"
             )
-        if not r.title.rstrip().endswith("?"):
-            r.warnings.append("제목이 의문문이 아닙니다 — 물음표(?)로 끝나야 합니다")
-            
+
     def _check_body(self, r: SeoReport) -> None:
         cfg = self.config
         if r.body_chars < cfg.body_min_chars:
@@ -265,7 +274,7 @@ class SeoChecker:
 
     def _check_chapters(self, r: SeoReport, text: str = "") -> None:
         cfg = self.config
-        label = "소제목" if cfg.format is Format.MARKDOWN else "숫자 챕터"
+        label = "소제목" if cfg.format is Format.MARKDOWN else "챕터"
         if r.chapter_count >= cfg.min_chapters:
             return
 
@@ -273,13 +282,18 @@ class SeoChecker:
             f"{label} 부족: {r.chapter_count}개 "
             f"(권장 {cfg.min_chapters}개 이상)"
         )
-        # 숫자만 빠뜨린 경우라면 원인을 짚어준다.
+        # 마커만 빠뜨린 경우라면 원인을 짚어준다.
+        #
+        # 챕터 줄에 숫자를 붙이라고 안내하면 안 된다. 이미지 자리 번호와
+        # 섞여 읽기 어려워서 번호를 뺀 것이 현재 설계이고(draft_prompt 의
+        # "챕터 줄 앞에 숫자를 붙이지 마세요"), draft_postprocessor 가
+        # 붙은 번호를 도로 떼어낸다. 그 안내를 따르면 설계가 원점으로 돌아간다.
         if cfg.format is Format.NAVER_BLOG and text:
             ordinals = len(_ORDINAL_ONLY.findall(text))
             if ordinals >= cfg.min_chapters:
                 msg += (
-                    f" — 번호 없는 순서 표현이 {ordinals}개 있습니다. "
-                    f"'첫 번째는' 앞에 '1.'을 붙이세요"
+                    f" — 순서 표현은 {ordinals}개 있는데 `/* 소제목 */` 마커가 "
+                    f"빠졌습니다. 챕터 첫 줄 끝에 마커를 붙이세요"
                 )
         r.warnings.append(msg)
 
@@ -292,7 +306,7 @@ class SeoChecker:
         if r.heading_count:
             r.warnings.append(
                 f"마크다운 헤딩 {r.heading_count}개 — 네이버 블로그에서는 "
-                f"숫자 챕터로 구분합니다"
+                f"챕터와 `/* 소제목 */` 마커로 구분합니다"
             )
         if r.bullet_count:
             r.warnings.append(

@@ -2,7 +2,12 @@
 .env
 
 # 실행 산출물
-data/
+# data/
+data/raw/
+data/processed/
+data/drafts/
+data/images/
+data/quality/
 logs/
 prompts/draft/.bm25_index.json
 knowledge/corpus/.bm25_index.json

@@ -1,0 +1,278 @@
+{
+  "model": "openai/clip-vit-large-patch14",
+  "source_dir": "data\\stock",
+  "file_count": 54,
+  "indexed_at": "2026-09-04T15:14:54",
+  "images": [
+    {
+      "path": "data\\stock\\camila-sanabria-42f0omhWez4-unsplash.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\Gemini_Image_1.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\kt-leung-bBSfoCPdBgk-unsplash.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\mondo-generator-DMnjM6coDy0-unsplash.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\nguyen-hung-FktPF6cwIWo-unsplash.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-10435675.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-15222871.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-17041775.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-20501958.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-30777332.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-30777338.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-30777340.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-30788994.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-30788996.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-30788999.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-30789000.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-30789001.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-30858416.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-33122161.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-36293742.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-36563836.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-37901792.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-37901793.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-37901794.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-37901797.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-38233888.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-38234030.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-38963062.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-39117589.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-5066945.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-5081179.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-5999191.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-5999200.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-5999201.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-6250928.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-6455249.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-6532594.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-6565251.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-6827124.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-7045466.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-7045516.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-7045746.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-7267573.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-7267585.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-7267588.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-7267591.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-7990073.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-7990076.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-7990087.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-7991197.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-8041993.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\pexels-9395507.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\thao-lee-SRFUTeEZ9bM-unsplash.jpg",
+      "width": 1000,
+      "height": 1000
+    },
+    {
+      "path": "data\\stock\\uriel-soberanes-ngd2uo1eyZg-unsplash.jpg",
+      "width": 1000,
+      "height": 1000
+    }
+  ]
+}
