@@ -60,6 +60,9 @@ jobs:
       NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
       NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
       NOTION_CONTENT_DATABASE_ID: ${{ secrets.NOTION_CONTENT_DATABASE_ID }}
+      # 보드 페이지 ID. '승인 불가 현황' 콜아웃이 이 페이지에 있다.
+      # 비어 있으면 reset_notice / write_notice 가 조용히 건너뛴다.
+      NOTION_BOARD_PAGE_ID: ${{ secrets.NOTION_BOARD_PAGE_ID }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       # 러너에서는 사실상 스톡 전용이다. 생성 경로(diffusers/torch)는

@@ -149,7 +149,13 @@ def run(
             reset_notice(NOTION_BOARD_PAGE_ID)
         except Exception as e:
             log.warning(f"'승인 불가 현황' 초기화 실패(이어서 진행): {e}")
-
+    elif not NOTION_BOARD_PAGE_ID and not dry_run and not no_notion:
+        # 조용히 건너뛰면 '콜아웃이 안 비워지는' 증상만 남고 원인이 보이지
+        # 않는다. 실제로 GitHub Actions 에 이 값이 빠져 며칠을 헤맸다.
+        log.warning(
+            "NOTION_BOARD_PAGE_ID 가 비어 있어 '승인 불가 현황' 초기화를 "
+            "건너뜁니다 (.env / Actions secrets 확인)"
+        )
     try:
         # 0) 이전 실행 상태 로드
         st = state.load()
