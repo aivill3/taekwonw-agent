@@ -1,5 +1,5 @@
 {
-  "last_collected_at": "2026-09-15T11:14:00+09:00",
+  "last_collected_at": "2026-09-15T11:30:00+09:00",
   "processed_urls": [
     "https://www.bzeronews.com/news/articleView.html?idxno=821398",
     "https://www.headlinejeju.co.kr/news/articleView.html?idxno=597679",
@@ -862,7 +862,12 @@
     "https://www.yna.co.kr/amp/view/AKR20260913033400062",
     "https://www.yna.co.kr/amp/view/AKR20260913054900007",
     "https://m.newsen.com/news_view.php?uid=202609141407160310",
-    "https://www.kocis.go.kr/koreanet/view.do?seq=1055517&page=1&pageSize=10&photoPageSize=6&totalCount=0&searchType=null&searchText=&searchCondition=1&cateCode="
+    "https://www.kocis.go.kr/koreanet/view.do?seq=1055517&page=1&pageSize=10&photoPageSize=6&totalCount=0&searchType=null&searchText=&searchCondition=1&cateCode=",
+    "https://www.hankyung.com/article/202609155330H",
+    "https://www.pointdaily.co.kr/news/articleView.html?idxno=319302",
+    "http://www.worldkorean.net/news/articleView.html?idxno=57770",
+    "http://www.newsprime.co.kr/news/article.html?no=747746",
+    "https://www.viva100.com/article/20260915500604"
   ],
-  "updated": "2026-09-15T11:17:53+09:00"
+  "updated": "2026-09-15T11:32:20+09:00"
 }
