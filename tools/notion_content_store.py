@@ -18,6 +18,19 @@ page_id 목록을 읽는다. Relation 속성 생성은 API 스키마가 버전�
 실패할 수 있는데, 그때도 파이프라인은 돌아야 하기 때문이다.
 page_id 36자 × 최대 5건 = 200자 남짓이라 2,000자 상한에 여유가 있다.
 
+자동 파이프라인 (2026-09-17)
+---------------------------
+승인 게이트와 뉴스 DB 보드를 없앴다. collect 가 수집부터 초안까지 한 번에
+돌고, 결과는 이 DB 에만 남는다. 원문은 페이지 안 토글에 들어가고,
+원문ID·원문기사(Relation)는 새 행에서 비어 있다.
+
+보드에서 키워드별로, 네이버 검색 순서대로 보기 위한 속성:
+    검색키워드  select  — 필터·그룹 기준
+    수집회차    date    — 같은 실행에서 나온 글이 같은 값을 가진다 (정렬 1순위, 내림차순)
+    검색순위    number  — 묶음 기사 중 가장 앞선 네이버 순위 (정렬 2순위, 오름차순)
+    원문URL     text    — 묶음 기사 URL (검색 순서, 줄바꿈 구분)
+보드 뷰의 필터·정렬은 API 로 만들 수 없어 Notion 에서 한 번 설정한다.
+
 초안 저장 위치
 -------------
 Content 페이지 본문에 넣는다. 원문은 토글로 접혀 있으므로 페이지를 열면
@@ -25,6 +38,7 @@ Content 페이지 본문에 넣는다. 원문은 토글로 접혀 있으므로 �
 """
 from __future__ import annotations
 
+from config.collect_config import LANE_NAMES
 from config.settings import NOTION_CONTENT_DATABASE_ID
 from core.logger import get_logger
 from agents.drafting.draft_prompt import DraftBrief, SourceArticle
@@ -37,6 +51,7 @@ from tools.notion_store import (
     fetch_page_body,
     text_to_blocks,
 )
+from agents.drafting.article_grouper import CHAPTERS_PER_POST
 
 log = get_logger(__name__)
 
@@ -57,9 +72,13 @@ PROP_TARGET = "목표분량"    # rich_text
 PROP_URL = "대표URL"        # url
 PROP_WRITER_MODEL = "작성모델"  # rich_text
 PROP_MORPH = "형태소"       # rich_text — 품질 측정 요약
+PROP_SEARCH_KEYWORD = "검색키워드"  # select — 네이버 검색어 (보드 필터·그룹)
+PROP_SEARCH_RANK = "검색순위"      # number — 묶음 기사 중 가장 앞선 순위
+PROP_RUN_AT = "수집회차"           # date — 같은 실행이면 같은 값
+PROP_SOURCE_URLS = "원문URL"       # rich_text — 기사 URL, 검색 순서
 
-# 소주제는 챕터다. article_grouper.MAX_CHAPTERS 와 같은 5개까지 표시한다.
-MAX_SUBTOPICS = 5
+# 소주제는 챕터다. article_grouper.MAX_CHAPTERS 와 같은 4개까지 표시한다.
+MAX_SUBTOPICS = CHAPTERS_PER_POST
 PROP_SUBTOPICS = [f"소주제{i}" for i in range(1, MAX_SUBTOPICS + 1)]
 
 # ── 상태 ───────────────────────────────────────────────
@@ -77,6 +96,10 @@ STATUS_HOLD = "보류"
 # 채 이름만 바꾼다. 옵션을 새로 '추가'하면 기존 행 값이 옛 이름에 남는다.
 RENAMED_OPTIONS: dict[str, dict[str, str]] = {
     PROP_STATUS: {"승인대기": STATUS_PENDING},
+    # 레인 이름 변경(2026-09). 옵션 id 를 유지해 개명하므로 기존 행의 값도
+    # 함께 따라온다. select 를 API 로 '새 이름으로 새로 만들면' 조용히 별개
+    # 옵션이 생기고 과거 행은 옛 값에 남는다.
+    PROP_SEARCH_KEYWORD: {"태권도조직": "조직"},
 }
 
 KIND_TOPIC = "주제형"
@@ -96,6 +119,15 @@ EXPECTED_PROPS: dict[str, dict] = {
     PROP_URL: {"url": {}},
     PROP_WRITER_MODEL: {"rich_text": {}},
     PROP_MORPH: {"rich_text": {}},
+    # 저장값은 레인 이름이다 (bundle["search_keyword"] = lane.name).
+    # 원시 검색 키워드(국기원 등)를 옵션으로 넣으면 한 건도 매칭되지 않고,
+    # API 로 지울 수 없는 빈 옵션만 보드에 쌓인다.
+    PROP_SEARCH_KEYWORD: {
+        "select": {"options": [{"name": n, "color": "default"} for n in LANE_NAMES]}
+    },
+    PROP_SEARCH_RANK: {"number": {"format": "number"}},
+    PROP_RUN_AT: {"date": {}},
+    PROP_SOURCE_URLS: {"rich_text": {}},
     PROP_KIND: {
         "select": {
             "options": [
@@ -207,7 +239,7 @@ def ensure_content_schema(data_source_id: str, news_data_source_id: str = "") ->
     #   개명 — '승인대기' -> '초안대기'. 옵션 id 를 유지하므로 기존 행의
     #          값도 함께 따라온다 (notion_store._merge_select_options 참고)
     notes: list[str] = [f"{n}(신규)" for n in patch]
-    for prop in (PROP_STATUS, PROP_KIND):
+    for prop in (PROP_STATUS, PROP_KIND, PROP_SEARCH_KEYWORD):
         if prop not in existing or prop in patch:
             continue
         if existing[prop].get("type") != "select":
@@ -334,10 +366,13 @@ def _review_blocks(brief: DraftBrief, reason: str) -> list[dict]:
     return blocks
 
 
-def _source_toggle(idx: int, art: SourceArticle) -> dict:
+def _source_toggle(idx: int, art: SourceArticle, search: str = "") -> dict:
     """기사 1건을 접힌 토글로. 제목 줄에 소주제를 함께 적어 어느 챕터가
-    이 기사에서 나왔는지 펼치지 않고도 알 수 있게 한다."""
-    label = f"{idx}. {art.title} ({art.source_chars:,}자)"
+    이 기사에서 나왔는지 펼치지 않고도 알 수 있게 한다.
+
+    search 는 '태권도 3위' 같은 검색 위치다. 있으면 제목 앞에 붙인다."""
+    prefix = f"[{search}] " if search else ""
+    label = f"{idx}. {prefix}{art.title} ({art.source_chars:,}자)"
     if art.subtopics:
         label += f" → {' / '.join(art.subtopics)}"
 
@@ -412,8 +447,14 @@ def create_content(
     title: str = "",
     status: str = STATUS_PENDING,
     dry_run: bool = False,
+    search_keyword: str = "",
+    search_ranks: list[int] | None = None,
+    run_at: str = "",
 ) -> str | None:
     """묶음 하나를 Content 페이지로 만든다. page_id 를 반환한다.
+
+    search_ranks 는 brief.articles 와 같은 순서의 기사별 검색 순위다.
+    가장 앞선 값이 '검색순위' 속성이 되고, 원문 토글에도 표시된다.
 
     title 을 주면 그것을 제목으로 쓴다. publish 가 초안을 완성한 뒤에
     부르므로 진짜 블로그 제목이 들어온다. 주지 않으면 '⏳ …' 임시 제목을
@@ -438,6 +479,20 @@ def create_content(
     }
     if head_url:
         props[PROP_URL] = {"url": head_url}
+
+    ranks = list(search_ranks or [])
+    ranks += [0] * (len(brief.articles) - len(ranks))
+    if search_keyword:
+        props[PROP_SEARCH_KEYWORD] = {"select": {"name": search_keyword}}
+    valid_ranks = [r for r in ranks if r]
+    if valid_ranks:
+        props[PROP_SEARCH_RANK] = {"number": min(valid_ranks)}
+    if run_at:
+        props[PROP_RUN_AT] = {"date": {"start": run_at}}
+    urls = [a.url for a in brief.articles if a.url]
+    if urls:
+        props[PROP_SOURCE_URLS] = _rt("\n".join(urls))
+
     if news_page_ids:
         props[PROP_NEWS] = {"relation": [{"id": pid} for pid in news_page_ids]}
     for name, text in zip(PROP_SUBTOPICS, subtopics):
@@ -471,8 +526,9 @@ def create_content(
     page_id = page["id"]
 
     # 원문 기사는 토글 하나씩 이어붙인다. 한 번에 보내면 100블록을 넘기 쉽다.
-    for i, art in enumerate(brief.articles, 1):
-        append_blocks(page_id, [_source_toggle(i, art)])
+    for i, (art, r) in enumerate(zip(brief.articles, ranks), 1):
+        search = f"{search_keyword} {r}위" if search_keyword and r else ""
+        append_blocks(page_id, [_source_toggle(i, art, search)])
 
     return page_id
 

@@ -121,5 +121,4 @@ WRITTEN_RETENTION_DAYS = int(os.getenv("WRITTEN_RETENTION_DAYS", "30"))
 
 # ── 네트워크 / 병렬 처리 ─────────────────────────────────
 REQUEST_TIMEOUT = 10        # 초
-MAX_WORKERS = 8             # URL 디코딩·본문 추출 병렬 스레드 수
-DECODER_INTERVAL = 1        # googlenewsdecoder 요청 간격(초) - 차단 방지
+MAX_WORKERS = 8             # 본문 추출 병렬 스레드 수

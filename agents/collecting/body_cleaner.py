@@ -48,8 +48,15 @@ KOREAN_MIN_RATIO = 0.5   # (한글 / (한글+라틴)) 이 값 미만이면 비�
 # 이메일 주소
 RE_EMAIL = re.compile(r"[\w.\-]+@[\w.\-]+\.\w+")
 
+# 언어 판정에서 뺄 URL. 도메인·경로는 전부 라틴 문자라, 링크가 몇 개만 남아도
+# 한글 비율이 기준 아래로 떨어진다.
+RE_URL = re.compile(r"https?://\S+|www\.\S+")
+
 # 언어 판정용: 한글 음절 / 라틴 알파벳
 RE_HANGUL = re.compile(r"[가-힣]")
+
+# 언어 오판 진단용. 라틴 문자가 길게 이어지는 구간을 찾는다.
+RE_LATIN_RUN = re.compile(r"[A-Za-z][A-Za-z0-9\s.,'\-]{20,}")
 RE_LATIN = re.compile(r"[A-Za-z]")
 
 # 기자 바이라인: (선택)지역= + 이름(한글 2~4자) + '기자' + (선택)이메일
@@ -117,11 +124,30 @@ CAPTION_MAX_LEN = 100  # 캡션 판정 상한 (본문 장문 오삭제 방지)
 #   - '▶▷►☞※' 기호는 공백 없이 붙어도 인정 ('▶제보는...' 대응)
 RE_LIST_MARKER = re.compile(r"^\s*(?:[-*•]\s|[▶▷►☞※])")
 
-# 저작권 / 무단전재 / 재배포 안내 (줄 어디에든 키워드가 있으면 해당 줄 제거)
+# 저작권 / 무단전재 / 재배포 안내 (짧은 줄이면 해당 줄 제거)
 RE_COPYRIGHT = re.compile(
     r"(무단\s*전재|재배포|저작권자|ⓒ|©|copyright)",
     re.IGNORECASE,
 )
+
+# 긴 줄에서는 줄을 지우지 않고 안내 문구만 도려낸다.
+# 추출기가 본문을 줄바꿈 없이 한 덩어리로 뱉는 사이트가 있다. 거기에 저작권
+# 문구가 섞여 있으면 줄 단위 삭제가 본문 전체를 날린다.
+# (2026-09-21: 충북보건과학대 기사 953자, 난민팀 기사 439자가 0자가 됐다)
+RE_COPYRIGHT_NOTICE = re.compile(
+    r"[<\[(]?\s*(?:ⓒ|©|copyright)?[^.\n]{0,40}?"
+    r"(?:무단\s*전재|재배포|저작권자)[^.\n]{0,40}?(?:금지|엄금)\s*[>\])]?\.?",
+    re.IGNORECASE,
+)
+
+# 이 길이를 넘는 줄은 통째로 지우지 않는다. 본문 한 문단이 통째로 들어 있을
+# 수 있어서다. 진짜 저작권 줄은 대개 한 문장이라 이보다 짧다.
+COPYRIGHT_LINE_MAX = 80
+
+# 외국어 줄 판정. 한국어 기사에 영문 요약·원문이 통째로 붙는 매체가 있다.
+# 줄 단위로 걷어내야 뒤의 언어 판정이 본문만 보고 판단할 수 있다.
+FOREIGN_LINE_MIN_LETTERS = 40   # 이 글자 수 미만인 줄은 판정하지 않는다
+FOREIGN_LINE_RATIO = 0.7        # 라틴 비율이 이 이상이면 외국어 줄
 
 # 여러 개의 공백/탭 → 공백 1개
 RE_MULTISPACE = re.compile(r"[ \t\u00a0]+")
@@ -183,12 +209,35 @@ def handle_agency_prefix_lines(text: str) -> str:
 
 
 def remove_boilerplate_lines(text: str) -> str:
-    """저작권/재배포 문구 줄과 기자 바이라인 줄을 제거한다."""
+    """저작권/재배포 문구 줄과 기자 바이라인 줄을 제거한다.
+
+    긴 줄은 지우지 않고 안내 문구만 도려낸다. 본문이 줄바꿈 없이 한 덩어리로
+    들어오는 사이트에서 줄 단위 삭제가 본문 전체를 날리기 때문이다.
+    """
     kept = []
     for ln in text.split("\n"):
         if RE_COPYRIGHT.search(ln):
-            continue
+            if len(ln) <= COPYRIGHT_LINE_MAX:
+                continue
+            ln = RE_COPYRIGHT_NOTICE.sub(" ", ln)
         if RE_BYLINE.match(ln):
+            continue
+        kept.append(ln)
+    return "\n".join(kept)
+
+
+def remove_foreign_lines(text: str) -> str:
+    """라틴 문자가 압도적인 줄을 제거한다 (영문 요약·원문 병기 대응).
+
+    짧은 줄은 건드리지 않는다. 'WT', 'KTA' 같은 약어나 선수 영문명이 섞인
+    한국어 문장까지 지우면 본문이 상한다.
+    """
+    kept = []
+    for ln in text.split("\n"):
+        hangul = len(RE_HANGUL.findall(ln))
+        latin = len(RE_LATIN.findall(ln))
+        total = hangul + latin
+        if total >= FOREIGN_LINE_MIN_LETTERS and latin / total >= FOREIGN_LINE_RATIO:
             continue
         kept.append(ln)
     return "\n".join(kept)
@@ -304,16 +353,26 @@ def normalize_whitespace(text: str) -> str:
     return text.strip()
 
 
-def is_korean(text: str) -> bool:
-    """한글 비율 기반 한국어 판정.
-    문자 중 한글과 라틴 알파벳만 세어 한글 비율이 KOREAN_MIN_RATIO 이상이면 한국어.
-    숫자·문장부호·공백은 언어 판정에 중립이므로 분모에서 제외한다."""
-    hangul = len(RE_HANGUL.findall(text))
-    latin = len(RE_LATIN.findall(text))
+def korean_ratio(text: str) -> float:
+    """한글 비율. 판정할 문자가 없으면 0.0.
+
+    한글과 라틴 알파벳만 세고, 숫자·문장부호·공백은 언어 판정에 중립이므로
+    분모에서 뺀다. URL 과 이메일도 뺀다 — 주소는 전부 라틴 문자라 본문이
+    한국어여도 링크 몇 개에 비율이 무너진다.
+    (2026-09-21: '춘천시, 2029년까지 국제태권도 3종 개최' 등 2건이
+     비한국어로 오판돼 제외됐다. 4개 매체가 보도한 사건이었다)
+    """
+    sample = RE_URL.sub(" ", text)
+    sample = RE_EMAIL.sub(" ", sample)
+    hangul = len(RE_HANGUL.findall(sample))
+    latin = len(RE_LATIN.findall(sample))
     total = hangul + latin
-    if total == 0:
-        return False  # 판정할 문자가 없으면 소재 부적합으로 간주
-    return hangul / total >= KOREAN_MIN_RATIO
+    return hangul / total if total else 0.0
+
+
+def is_korean(text: str) -> bool:
+    """한글 비율 기반 한국어 판정."""
+    return korean_ratio(text) >= KOREAN_MIN_RATIO
 
 
 # ── 오케스트레이터 ─────────────────────────────────────
@@ -328,6 +387,7 @@ CLEAN_STEPS = (
     ("섹션 머리글 절단", truncate_at_section_header),
     ("양끝 목록 블록", remove_edge_list_blocks),
     ("이메일", strip_emails),
+    ("외국어 줄", remove_foreign_lines),
     ("공백 정규화", normalize_whitespace),
 )
 
@@ -370,8 +430,24 @@ def clean_all(articles: list[Article]) -> list[Article]:
             # 어느 규칙이 지웠는지 남긴다. 결과만 찍으면 원인을 좁힐 수 없다.
             log.warning(f"    단계별: {diagnose(a.body)}")
             continue
-        if not is_korean(a.body_clean):
-            log.warning(f"비한국어 기사 제외: {a.title[:40]}")
+        ratio = korean_ratio(a.body_clean)
+        if ratio < KOREAN_MIN_RATIO:
+            # 비율과 본문 앞머리를 함께 남긴다. 제목만 찍으면 진짜 외국어
+            # 기사인지 추출이 잘못된 것인지 로그만으로 가릴 수 없다.
+            log.warning(
+                f"비한국어 기사 제외(한글 {ratio:.0%} / 기준 {KOREAN_MIN_RATIO:.0%}): "
+                f"{a.title[:40]}"
+            )
+            log.warning(f"    본문 앞머리: {a.body_clean[:80]}")
+            # 앞머리가 멀쩡한 한국어인데 비율이 낮으면, 뒤쪽에 라틴 덩어리가
+            # 있다는 뜻이다. 그 덩어리를 같이 찍어야 정체를 알 수 있다.
+            runs = RE_LATIN_RUN.findall(a.body_clean)
+            if runs:
+                longest = max(runs, key=len)
+                log.warning(
+                    f"    라틴 덩어리 {len(runs)}개 · 최장 {len(longest)}자: "
+                    f"{longest[:80]}"
+                )
             continue
         result.append(a)
     log.info(f"정제 완료, 유효 기사 {len(result)}/{len(articles)}건")

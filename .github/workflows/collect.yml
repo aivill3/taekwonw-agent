@@ -1,18 +1,21 @@
-# 하루 두 번 수집 → 묶음 배정.
+# 하루 두 번, 수집부터 초안 저장까지 자동으로 돈다 (2026-09 구조 변경).
 #
-# 사람 개입이 없는 두 단계만 돌린다. 확정과 초안 작성은 보드에서 배치를
-# 확인한 뒤 [초안 작성] 버튼을 눌러야 시작된다(poll.yml).
+#   네이버 수집(레인별) → 선정 → 소주제 → 레인별 4건 묶기
+#   → 초안 → Content DB 저장 → 삽화
+#
+# 승인 게이트와 뉴스 DB 보드를 없앴다. 결과는 Content DB 보드에서
+# 레인(= 검색키워드 속성)으로 나눠 본다. 버튼 폴링(poll.yml)은 쓰지 않는다.
 #
 # 하루 두 번인 이유
 # ---------------
 # 오전에 한 번만 돌리면 낮에 나온 기사가 다음 날까지 밀린다. 태권도
 # 대회 소식은 당일 오후에 올라오는 것이 많아 시의성이 떨어진다.
 #
-# 오후 회차는 오전에 배정하고 남은 슬롯만 쓴다. content 가 이미 점유된
-# 칸을 건너뛰므로(occupied 검사) 오전 배정분을 덮어쓰지 않는다.
+# 오전에 쓴 기사는 처리 이력(state/)에 남아 오후 회차에서 다시 뽑히지
+# 않는다. 오전에 4건을 못 채워 보류된 기사는 오후에 다시 후보가 된다.
 #
 # cron 은 정시를 보장하지 않는다. GitHub 부하에 따라 5~15분, 때로는 더
-# 늦게 시작한다. collect 는 몇 분 늦어도 문제가 없어 그대로 둔다.
+# 늦게 시작한다. 몇 분 늦어도 문제가 없어 그대로 둔다.
 name: collect
 
 on:
@@ -44,28 +47,60 @@ permissions:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60          # 초안·삽화까지 한 번에 돈다
 
     env:
       NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
       NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
       NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
-      NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
       NOTION_CONTENT_DATABASE_ID: ${{ secrets.NOTION_CONTENT_DATABASE_ID }}
-      # 보드 페이지 ID. '승인 불가 현황' 콜아웃이 이 페이지에 있다.
-      # 비어 있으면 reset_notice / write_notice 가 조용히 건너뛴다.
-      NOTION_BOARD_PAGE_ID: ${{ secrets.NOTION_BOARD_PAGE_ID }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
       # 동작 설정. 숨길 값이 아니라 시크릿이 아니라 여기에 둔다.
       # 워크플로 파일만 봐도 어떤 조건으로 도는지 알 수 있어야 한다.
       IMAGE_SOURCE: hybrid
-      # 작성완료 페이지를 Notion 에서 지우지 않는다.
-      # 러너의 파일 시스템은 실행이 끝나면 사라지므로, 로컬에 남는
-      # data/drafts 를 백업으로 칠 수 없다. Notion 이 유일한 사본이다.
-      KEEP_WRITTEN: "true"
-      WRITTEN_RETENTION_DAYS: "30"
+      # 수집 조건. 레인마다 따로 검색·선정·묶기를 한다.
+      #
+      # 레인 = 블로그 카테고리 하나.  이름:키워드들:수집건수:조회일수
+      # 적은 순서가 선정 우선순위 — 뉴스가 적은 조직을 앞에 둔다.
+      # 레인 이름이 Notion '검색키워드' 속성값이자 보드 필터 기준이다.
+      LANES: "조직:국기원,세계태권도연맹,대한태권도협회:100:7 | 대회:태권도대회,태권도선수권:60:3 | 태권도:태권도:50:3"
+      # 주제 판정이 후보를 정할 레인. LANES 의 레인 이름과 정확히 같아야 한다.
+      # 비우면 판정을 끄고 검색 키워드 배정으로 돌아간다.
+      CLASSIFY_LANE: "조직"
+      # LANES 가 없을 때만 쓰이는 대비책.
+      SEARCH_KEYWORDS: "태권도,국기원,태권도협회"
+      NAVER_SORT: "sim"
+      NAVER_DISPLAY: "30"
+
+      # 선정 임계값. tools/eval_gate.py 로 라벨 138건에 채점해 정한 값이다.
+      # (2026-09-22: 정밀도 89.8% → 97.1%, 재현율 85.8% → 89.4%)
+      # MIN_CORE_HITS 는 기본값 3 을 쓴다. 2 로 내리면 실측 무관 구간(0~2)에
+      # 걸치는데, 라벨 셋의 '무관' 25건으로는 늘어나는 오탐을 감지할 수 없다.
+      EVENT_SIMILARITY: "0.12"
+      # 같은 사건 판정의 두 번째 기준 (Jaccard 와 '또는'). 길이가 크게 다른 두
+      # 기사(종합 기사 vs 단신)를 묶는다. 0 이면 끈다.
+      # 실측 2026-09-22: J<0.12 · O≥0.5 인 8쌍이 전부 같은 사건 (공유 토큰 최소 19).
+      EVENT_OVERLAP: "0.5"
+      EVENT_OVERLAP_MIN_SHARED: "15"
+      # 협회 징계·소송 제외. 라벨 셋에서 이 유형은 전부 '무관' 이었고,
+      # 켜도 재현율이 전혀 안 떨어졌다(오탐 8건만 사라짐).
+      EXCLUDE_DISPUTE: "true"
+      # 사진 캡션 하한. 캡션(119~170자)과 짧은 실기사(203~234자)가 갈린다.
+      MIN_BODY_CHARS: "200"
+      # 고유어 '언급 횟수' 하한. 단문 대회 결과 기사는 '태권도'를 반복할
+      # 이유가 없어 3회에서 걸렸다. 실측 무관 기사는 1회라 여유가 있다.
+      MIN_CORE_MENTIONS: "3"
+      # 고유어 '종류 수' 경로는 서로 다른 자리 2곳 이상에서 나와야 인정한다.
+      # '태권도시범단' 한 단어가 태권·태권도·시범단 3종으로 불어나 군 생활체육
+      # 대회 기사가 통과하던 것을 막는다 (2026-09-22 창녕 4건).
+      # 라벨 146건 채점: 1 → 2 에서 정밀도·재현율 변화 없음 (95.4% / 89.7%).
+      MIN_CORE_SPANS: "2"
+      # 사건 묶음 정렬. 0=보도 매체 수 내림차순 | 1=검색 순서 | N=N매체 이상 우선
+      CLUSTER_PRIORITY_MIN: "0"
+      # 한 실행에서 레인당 쓸 글 수 (한 편 = 기사 4건)
+      POSTS_PER_KEYWORD: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -79,11 +114,8 @@ jobs:
       - name: 의존성 설치
         run: uv sync --frozen
 
-      - name: 수집
+      - name: 수집 → 초안 작성
         run: uv run python run.py collect
-
-      - name: 묶음 배정
-        run: uv run python run.py content
 
       - name: 상태 저장
         # 모델 소진 기록이 바뀌었을 수 있다. 안 남기면 다음 실행이
@@ -99,11 +131,15 @@ jobs:
           git pull --rebase --autostash
           git push
 
-      - name: 로그 보관
+      - name: 로그·CSV 보관
+        # data/processed/ 는 커밋하지 않으므로 여기서 빼내지 않으면 러너와
+        # 함께 사라진다. 선정 누락 추적과 label_corpus.py 재료용.
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: logs-collect-${{ github.run_id }}
-          path: logs/
+          path: |
+            logs/
+            data/processed/
           retention-days: 7
           if-no-files-found: ignore

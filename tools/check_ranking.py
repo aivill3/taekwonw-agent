@@ -1,167 +1,162 @@
-"""랭킹 필터 진단 (Notion에 이미 저장된 기사로 임계값을 점검한다).
+#!/usr/bin/env python
+"""주제 적합성 필터 진단 — 수집 CSV 로 임계값을 맞춰 본다.
+
+    py tools/check_ranking.py                     가장 최근 collected_*.csv
+    py tools/check_ranking.py --keyword 태권도조직   그 키워드 후보만
+    py tools/check_ranking.py --core 2            고유어 기준을 2로 가정
+    py tools/check_ranking.py --core 2 --hits 4   두 기준을 함께 가정
+    py tools/check_ranking.py --file data/processed/collected_20260918_130032.csv
+
+예전에는 Notion 뉴스 DB 의 '선정됨' 카드를 읽었다. 뉴스 DB 를 쓰지 않게
+되면서(2026-09) collect 가 남기는 CSV 를 보도록 바꿨다.
 
 왜 필요한가
 ----------
-is_on_topic() 의 임계값은 실제 기사 분포를 보고 정해야 한다. 합성 예제로
-맞춘 값은 실제 데이터에서 어긋난다. 이 도구는 Notion에 쌓인 기사를 그대로
-읽어 각 기사가 어느 관문에서 걸리는지 숫자로 보여준다.
+키워드를 늘리면 통과율이 키워드마다 달라진다. 대회·선수 기사는 고유어가
+넉넉하지만, 협회·조직 기사는 짧고 고유어가 2개 안팎이라 같은 기준에서
+무더기로 탈락한다. 어떤 기사가 어느 관문에서 걸렸는지 숫자로 봐야
+임계값을 옮길지 판단할 수 있다.
 
-Notion 상태를 바꾸지 않는다. 읽기만 한다.
+--core / --hits 는 이 실행에만 적용된다. 값을 정한 뒤에는 .env 나
+collect.yml 에 MIN_CORE_HITS / MIN_DOMAIN_HITS 로 넣는다.
 
-사용법
------
-    # 기본: '선정됨' 기사를 진단
-    uv run python -m tools.check_ranking
-
-    # 다른 상태도 함께
-    uv run python -m tools.check_ranking --status 선정됨 --status 수집됨
-
-    # 통과한 기사만 / 제외된 기사만
-    uv run python -m tools.check_ranking --only pass
-    uv run python -m tools.check_ranking --only fail
-
-    # 임계값을 바꿔가며 실험 (파일을 고치지 않고)
-    uv run python -m tools.check_ranking --core 3 --density 1.0 --density-no-title 2.0
-
-    # 어떤 단어가 태권도 고유어로 잡혔는지 보기
-    # (지표상 정상 기사와 구분되지 않는 기사의 원인을 찾을 때)
-    uv run python -m tools.check_ranking --words
+CSV 의 본문은 정제 전 상태다. 이 도구가 body_cleaner 를 그대로 돌려
+파이프라인과 같은 조건으로 판정한다.
 """
-from __future__ import annotations
-
 import argparse
+import csv
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.article_models import Article  # noqa: E402
-from core.logger import setup  # noqa: E402
-from agents.ranking import ranking_agent as R  # noqa: E402
-from tools.notion_store import (  # noqa: E402
-    STATUS_DEFAULT,
-    fetch_by_status,
-    fetch_page_body,
-    resolve_data_source_id,
-)
+from agents.collecting.body_cleaner import clean_all           # noqa: E402
+from agents.ranking import ranking_agent as R                  # noqa: E402
+from config.settings import PROCESSED_DIR                      # noqa: E402
+from core.article_models import Article                        # noqa: E402
+from core.logger import setup                                  # noqa: E402
 
 
-def load_articles(statuses: list[str]) -> list[Article]:
-    """Notion에서 기사를 읽어 Article 로 만든다. 본문은 페이지 블록에서 가져온다."""
-    ds = resolve_data_source_id()
-    out: list[Article] = []
-
-    for status in statuses:
-        items = fetch_by_status(ds, status)
-        print(f"  '{status}' {len(items)}건 조회")
-        for it in items:
-            body = fetch_page_body(it["page_id"])
-            a = Article(title=it["title"], url=it.get("url", ""), source="notion")
-            a.body_clean = body
-            a.page_id = it["page_id"]
-            out.append(a)
-
-    return out
+def _latest_csv() -> Path | None:
+    files = sorted(PROCESSED_DIR.glob("collected_*.csv"))
+    return files[-1] if files else None
 
 
-def core_words(article: Article) -> list[str]:
-    """이 기사에서 태권도 고유어로 인정된 단어들."""
-    tokens = set(R.tokenize(f"{article.title}\n{article.body_clean}"))
-    return sorted(tk for tk in tokens if R._is_core(tk))
+def _load(path: Path) -> list[Article]:
+    """CSV 한 줄을 Article 로 되돌린다. 없는 열은 기본값으로 둔다."""
+    fields = {f.name for f in Article.__dataclass_fields__.values()}
+    articles = []
+    with path.open(encoding="utf-8-sig", newline="") as f:
+        for row in csv.DictReader(f):
+            data = {k: v for k, v in row.items() if k in fields}
+            data["search_rank"] = int(data.get("search_rank") or 0)
+            data["subtopics"] = [
+                s for s in (data.get("subtopics") or "").split("\n") if s.strip()
+            ]
+            for drop in ("keyword_score", "score_norm", "report_count", "matched_keywords"):
+                data.pop(drop, None)
+            articles.append(Article(**data))
+    return articles
 
 
-def diagnose(articles: list[Article], only: str, show_words: bool) -> None:
-    rows = []
-    for a in articles:
-        core = R.count_core_hits(a)
-        domain = R.count_domain_hits(a)
-        in_title = R.has_domain_in_title(a)
-        chars = len(a.body_clean)
-        density = core / (chars / 1000) if chars else 0.0
-        passed, why = R.is_on_topic(a)
-        words = core_words(a) if show_words else []
-        rows.append((passed, a.title, core, domain, in_title, chars, density, why, words))
-
-    rows.sort(key=lambda r: (r[0], r[6]))
-
-    print()
-    print(f"{'':2} {'고유':>4} {'도메인':>5} {'제목':>4} {'본문':>7} {'밀도':>6}  제목 / 사유")
-    print("-" * 110)
-
-    for passed, title, core, domain, in_title, chars, density, why, words in rows:
-        if only == "pass" and not passed:
-            continue
-        if only == "fail" and passed:
-            continue
-        mark = "O" if passed else "X"
-        t = "O" if in_title else "-"
-        print(f"{mark:2} {core:>4} {domain:>5} {t:>4} {chars:>7,} {density:>6.2f}  {title[:52]}")
-        if not passed:
-            print(f"{'':>32}   └ {why}")
-        if words:
-            # 고유어가 무엇인지 보면 오탐의 원인이 드러난다.
-            # (예: 종합 기사에서 '태권도부' 한 단락 때문에 6개가 잡히는 경우)
-            print(f"{'':>32}   · {', '.join(words)}")
-
-    ok = sum(1 for r in rows if r[0])
-    print("-" * 110)
-    print(f"통과 {ok}건 · 제외 {len(rows) - ok}건 (전체 {len(rows)}건)")
-
-    # 임계값 근처 기사를 따로 보여준다. 여기가 조정 여지가 있는 구간이다.
-    print()
-    print("[경계선 기사] 임계값을 조금만 움직여도 판정이 바뀌는 것들")
-    border = [
-        r for r in rows
-        if abs(r[2] - R.MIN_CORE_HITS) <= 1
-        or (r[5] >= R.DENSITY_CHECK_MIN_CHARS and abs(r[6] - (
-            R.MIN_CORE_DENSITY if r[4] else R.MIN_CORE_DENSITY_NO_TITLE)) <= 0.4)
-    ]
-    if not border:
-        print("  없음 (모든 기사가 임계값에서 충분히 떨어져 있음)")
-    for passed, title, core, domain, in_title, chars, density, why, _w in border[:15]:
-        print(f"  {'통과' if passed else '제외'} · 고유 {core}개 · 밀도 {density:.2f} · {title[:50]}")
-
-
-def main() -> int:
-    ap = argparse.ArgumentParser(description="랭킹 필터 진단 (읽기 전용)")
-    ap.add_argument("--status", action="append", default=None,
-                    help=f"진단할 Notion 상태 (기본 '{STATUS_DEFAULT}'). 여러 번 지정 가능")
-    ap.add_argument("--only", choices=["all", "pass", "fail"], default="all")
-    ap.add_argument("--words", action="store_true",
-                    help="기사별로 태권도 고유어로 인정된 단어를 함께 출력")
-    ap.add_argument("--core", type=int, default=None, help="MIN_CORE_HITS 임시 변경")
-    ap.add_argument("--density", type=float, default=None, help="MIN_CORE_DENSITY 임시 변경")
-    ap.add_argument("--density-no-title", type=float, default=None,
-                    help="MIN_CORE_DENSITY_NO_TITLE 임시 변경")
-    args = ap.parse_args()
+def main() -> None:
+    p = argparse.ArgumentParser(description="주제 적합성 필터 진단")
+    p.add_argument("--file", help="collected_*.csv 경로 (기본: 가장 최근 파일)")
+    p.add_argument("--keyword", help="이 검색 키워드의 기사만 본다")
+    p.add_argument("--core", type=int, help=f"고유어 기준 (현재 {R.MIN_CORE_HITS})")
+    p.add_argument("--hits", type=int, help=f"도메인 키워드 기준·제목O (현재 {R.MIN_DOMAIN_HITS})")
+    p.add_argument(
+        "--hits-no-title", type=int,
+        help=f"도메인 키워드 기준·제목X (현재 {R.MIN_DOMAIN_HITS_NO_TITLE})",
+    )
+    p.add_argument(
+        "--mentions",
+        type=int,
+        default=None,
+        help=f"핵심어 언급 횟수 기준 (현재 {R.MIN_CORE_MENTIONS})",
+    )
+    p.add_argument(
+        "--no-crime", action="store_true", help="사건 기사 제외 규칙을 끄고 본다"
+    )
+    p.add_argument(
+        "--dispute", action="store_true", help="협회 징계·소송 기사도 제외해 본다"
+    )
+    args = p.parse_args()
 
     setup()
+    path = Path(args.file) if args.file else _latest_csv()
+    if not path or not path.exists():
+        print(f"CSV 를 찾을 수 없습니다: {path or PROCESSED_DIR}")
+        raise SystemExit(1)
 
-    # 임계값을 실행 시점에만 덮어쓴다. 파일은 건드리지 않는다.
+    # 가정값 적용. 모듈 상수를 바꾸면 is_on_topic 이 그대로 읽는다.
+    before = (R.MIN_CORE_HITS, R.MIN_DOMAIN_HITS, R.MIN_DOMAIN_HITS_NO_TITLE)
     if args.core is not None:
         R.MIN_CORE_HITS = args.core
-    if args.density is not None:
-        R.MIN_CORE_DENSITY = args.density
-    if args.density_no_title is not None:
-        R.MIN_CORE_DENSITY_NO_TITLE = args.density_no_title
+    if args.hits is not None:
+        R.MIN_DOMAIN_HITS = args.hits
+    if args.hits_no_title is not None:
+        R.MIN_DOMAIN_HITS_NO_TITLE = args.hits_no_title
+    if args.mentions is not None:
+        R.MIN_CORE_MENTIONS = args.mentions
+    after = (R.MIN_CORE_HITS, R.MIN_DOMAIN_HITS, R.MIN_DOMAIN_HITS_NO_TITLE)
 
-    print("=" * 60)
-    print("랭킹 필터 진단")
-    print(f"  고유어 최소 {R.MIN_CORE_HITS}개")
-    print(f"  밀도 기준 제목O {R.MIN_CORE_DENSITY} / 제목X {R.MIN_CORE_DENSITY_NO_TITLE}"
-          f" (본문 {R.DENSITY_CHECK_MIN_CHARS:,}자 이상일 때)")
-    print(f"  도메인 개수 제목O {R.MIN_DOMAIN_HITS} / 제목X {R.MIN_DOMAIN_HITS_NO_TITLE}")
-    print("=" * 60)
+    # 사건 기사 제외도 같은 방식으로 가정해 본다.
+    if args.no_crime:
+        R.EXCLUDE_CRIME = False
+    if args.dispute:
+        R.EXCLUDE_DISPUTE = True
+    incident = (
+        "끔"
+        if not R.EXCLUDE_CRIME
+        else ("형사+분쟁" if R.EXCLUDE_DISPUTE else "형사만")
+    )
 
-    statuses = args.status or [STATUS_DEFAULT]
-    articles = load_articles(statuses)
+    articles = clean_all(_load(path))
+    if args.keyword:
+        articles = [a for a in articles if a.search_keyword == args.keyword]
     if not articles:
-        print("진단할 기사가 없습니다.")
-        return 1
+        print("대상 기사가 없습니다.")
+        raise SystemExit(1)
 
-    diagnose(articles, args.only, args.words)
-    return 0
+    print(f"\n파일: {path.name} · 기사 {len(articles)}건")
+    print(f"기준: 고유어 {after[0]} · 도메인 제목O {after[1]} / 제목X {after[2]}", end="")
+    print(f"   (기본값 {before[0]} / {before[1]} / {before[2]})")
+    print(
+        f"언급 {R.MIN_CORE_MENTIONS}회 이상이면 종류 수 미달도 통과 · "
+        f"본문 {R.MIN_BODY_CHARS}자 미만 제외"
+    )
+    print(f"사건 기사 제외: {incident} (본문 기준 {R.CRIME_BODY_HITS}개)\n")
+
+    passed: dict[str, int] = {}
+    total: dict[str, int] = {}
+    for a in sorted(articles, key=lambda x: (x.search_keyword, x.search_rank)):
+        ok, reason = R.is_on_topic(a)
+        core = R.count_core_hits(a)
+        mentions = R.count_core_mentions(a)
+        hits = R.count_domain_hits(a)
+        chars = len(a.body_clean)
+        density = core / (chars / 1000) if chars else 0.0
+        kw = a.search_keyword or "-"
+        total[kw] = total.get(kw, 0) + 1
+        passed[kw] = passed.get(kw, 0) + (1 if ok else 0)
+        mark = "O" if ok else "X"
+        title = "제목O" if R.has_domain_in_title(a) else "제목X"
+        print(
+            f"[{mark}] {kw} {a.search_rank:>2}위 | 고유어 {core:>2} · 언급 {mentions:>3} · "
+            f"도메인 {hits:>2} · 밀도 {density:>5.2f} · {chars:>5,}자 · {title} | {a.title[:38]}"
+        )
+        if not ok:
+            print(f"      탈락: {reason}")
+
+    print("\n키워드별 통과")
+    for kw in total:
+        print(f"  {kw}: {passed[kw]}/{total[kw]}건")
+    print(
+        "\n값을 정했으면 .env 나 collect.yml 에 MIN_CORE_HITS / MIN_DOMAIN_HITS /"
+        " MIN_DOMAIN_HITS_NO_TITLE 로 넣으세요."
+    )
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

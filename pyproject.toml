@@ -10,8 +10,8 @@ requires-python = ">=3.12"
 dependencies = [
     "requests>=2.31",
     "python-dotenv>=1.0",
-    "feedparser>=6.0",          # 구글 뉴스 RSS 파싱
-    "googlenewsdecoder>=0.1.7", # 구글 리다이렉트 링크 → 언론사 원문 URL
+    # 구글 뉴스 RSS 파싱
+    # 구글 리다이렉트 링크 → 언론사 원문 URL
     "trafilatura>=1.12",        # 기사 본문 추출
     "kiwipiepy>=0.17",          # 한국어 형태소 분석 (품질 검사 전반이 의존)
     # Windows 는 IANA 시간대 DB를 기본 제공하지 않는다.

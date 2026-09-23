@@ -80,7 +80,11 @@ def notify_selected(articles: list, stats: dict | None = None) -> None:
         score = getattr(a, "score_norm", 0)
         count = getattr(a, "report_count", 1)
 
-        badge = f"`{score}점`"
+        # 선정 순서는 검색 순위가 정한다. 점수는 참고용이라 뒤에 둔다.
+        keyword = getattr(a, "search_keyword", "")
+        search_rank = getattr(a, "search_rank", 0)
+        badge = f"`{keyword} {search_rank}위` · " if keyword and search_rank else ""
+        badge += f"`참고 {score}점`"
         if count > 1:
             badge += f" · `{count}개 매체 보도`"
 

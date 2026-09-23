@@ -1,43 +1,22 @@
 #!/usr/bin/env python
 """TaekwonW 뉴스 블로그 자동화 — CLI 진입점.
 
-    py run.py collect                수집 → 정제 → Notion → 랭킹 → 소주제
-    py run.py content                기사를 묶어 보드의 '묶음' 슬롯에 배정
-      [사람이 Notion 보드에서 카드를 끌어 배치 조정]
-    py run.py confirm --check        배치 점검 — 카드에 승인 가능/불가 표시
-    py run.py confirm                '초안요청' 배치를 검증해 묶음ID 부여
-    py run.py publish --limit 3      확정분으로 초안 작성 → Content 생성 → 삽화
-    py run.py publish --bundle-id 20260902-04    그 묶음만 작성
+    py run.py collect                수집 → 키워드별 선정 → 소주제 → 묶기
+                                     → 초안 → Content 저장 → 삽화 (한 번에)
+    py run.py collect --no-images    삽화 없이 초안까지만 (로컬 CPU 에서 빠르게)
     py run.py images                 초안에 삽화만 나중에 붙이기
     py run.py images --redo          이미 붙은 삽화를 지우고 다시 만들기
-
-    py run.py subtopic               '선정요청' 기사에 소주제 생성 (보조 경로)
     py run.py check --file draft.md  파일 하나를 품질 검사 (파이프라인과 무관)
 
-collect 가 소주제까지 만든다. 이름과 달리 수집만 하지 않는다 — 묶기 단계가
-소주제 수로 챕터를 세기 때문에 그 전에 채워져 있어야 한다.
+사람 승인 없이 collect 한 번으로 초안까지 나간다 (2026-09-17~).
+결과는 Notion Content DB 보드에서 검색키워드별로, 네이버 검색 순서대로 본다.
 
-content 와 confirm 이 나뉜 이유는 사람이 손볼 여지를 남기기 위해서다.
-content 가 자동으로 묶어 보드에 배치하면, 사람이 카드를 끌어 고치고,
-confirm 이 그 결과를 검증해 묶음ID 를 붙인다.
+예전의 content · confirm · publish · subtopic 명령은 없앴다. 뉴스 DB 보드에
+카드를 배치하고 버튼으로 초안을 요청하던 경로라, 승인 게이트와 뉴스 보드를
+없애면서 할 일이 사라졌다.
 
-Notion 보드는 "한 칸에 4개까지"를 막지 못하므로 confirm 이 검사한다.
-규칙을 어긴 슬롯은 통째로 건너뛰고 상태를 바꾸지 않으니, 고쳐서 다시
-확정하면 된다.
-
-승인은 보드에 카드를 놓고 confirm 을 돌리는 것 자체다. 별도의 승인
-체크박스는 없앴다. 확정을 취소하려면 보드에서 카드를 '선정됨'으로
-되돌리면 된다.
-
-publish 를 confirm 과 합치지 않은 것은 실행 시점을 고르기 위해서다.
-Gemini 2.0 Flash 는 RPD 20 이라 확정해 둔 것을 하루에 다 돌릴 수 없다.
---limit 으로 나눠 돌리고, 특정 편을 지목할 때는 --bundle-id 를 쓴다.
-
-subtopic 은 순서상 보조 경로다. 랭킹이 놓친 기사를 사람이 Notion 에서
-'선정요청' 으로 바꿔 뒀을 때만 쓴다.
-
---dry-run 은 Notion 에 쓰지 않고 LLM 도 부르지 않는다. 무료 티어 할당량을
-아끼려는 설계라, 드라이런으로는 소주제·초안 품질을 확인할 수 없다.
+--dry-run 은 선정·묶기 결과만 보여 준다. Notion 에 쓰지 않고 LLM 도 부르지
+않는다. 소주제·초안 품질까지 보려면 --no-notion 을 쓴다 (LLM 은 호출한다).
 """
 import argparse
 import sys
@@ -56,40 +35,8 @@ def _cmd_collect(args) -> None:
         skip_duplicates=not args.no_skip_duplicates,
         skip_subtopic=args.no_subtopic,
         no_notion=args.no_notion,
-    )
-
-
-def _cmd_subtopic(args) -> None:
-    from workflows import subtopic_workflow
-
-    subtopic_workflow.run(dry_run=args.dry_run, dedupe=not args.no_dedupe)
-
-
-def _cmd_content(args) -> None:
-    from workflows import content_workflow
-
-    content_workflow.run(
-        dry_run=args.dry_run,
-        dedupe=not args.no_dedupe,
-        topic_filter=not args.no_topic_filter,
-    )
-
-
-def _cmd_confirm(args) -> None:
-    from workflows import confirm_workflow
-
-    confirm_workflow.run(dry_run=args.dry_run, check_only=args.check)
-
-
-def _cmd_publish(args) -> None:
-    from workflows import publish_workflow
-
-    publish_workflow.run(
-        dry_run=args.dry_run,
         with_images=not args.no_images,
         with_quality=not args.no_quality,
-        limit=args.limit,
-        bundle_id=args.bundle_id,
     )
 
 
@@ -133,72 +80,32 @@ def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
         "--dry-run", action="store_true",
-        help="Notion에 쓰지 않고 LLM도 부르지 않는다 (결과만 출력)",
+        help="Notion에 쓰지 않고 LLM도 부르지 않는다 (선정·묶기 결과만 출력)",
     )
 
-    p = sub.add_parser("collect", parents=[common], help="뉴스 수집 → 선정 → 소주제")
+    p = sub.add_parser(
+        "collect", parents=[common], help="수집부터 초안 저장·삽화까지 자동 실행"
+    )
     p.add_argument(
         "--no-subtopic", action="store_true",
-        help="소주제 생성을 건너뛴다 (상태는 '선정요청'으로 남는다)",
+        help="선정까지만 하고 끝낸다 (LLM 미호출, CSV 백업만 남긴다)",
     )
     p.add_argument(
         "--no-skip-duplicates", action="store_true",
-        help="이미 저장된 URL도 다시 저장한다",
+        help="처리 이력을 무시하고 이미 쓴 기사도 다시 후보로 본다",
     )
     p.add_argument(
         "--no-notion", action="store_true",
-        help="Notion 없이 실행한다. 결과는 data/processed/ 의 CSV 로만 남는다",
-    )
-    p.set_defaults(func=_cmd_collect)
-
-    p = sub.add_parser(
-        "content", parents=[common], help="기사를 묶어 보드의 '묶음' 슬롯에 배정"
-    )
-    p.add_argument(
-        "--no-dedupe", action="store_true",
-        help="같은 사건 중복 제거를 하지 않는다 (여러 날치가 쌓였을 때만 끄세요)",
-    )
-    p.add_argument(
-        "--no-topic-filter", action="store_true",
-        help="주제 적합성 재검사를 하지 않는다 (사람이 고른 기사를 그대로 쓸 때)",
-    )
-    p.set_defaults(func=_cmd_content)
-
-    p = sub.add_parser(
-        "confirm", parents=[common], help="'초안요청' 배치를 검증해 묶음ID 부여"
-    )
-    p.add_argument(
-        "--check", action="store_true",
-        help="확정하지 않고 카드에 '승인 가능/불가' 문구만 기록한다",
-    )
-    p.set_defaults(func=_cmd_confirm)
-
-    p = sub.add_parser("subtopic", parents=[common], help="'선정요청' 기사에 소주제 생성")
-    p.add_argument("--no-dedupe", action="store_true", help="사건 묶기를 하지 않는다")
-    p.set_defaults(func=_cmd_subtopic)
-
-    p = sub.add_parser(
-        "publish", parents=[common], help="확정된 묶음으로 블로그 초안 작성"
+        help="초안까지 만들어 콘솔에 출력한다. Notion 과 처리 이력은 건드리지 않는다",
     )
     p.add_argument(
         "--no-images", action="store_true",
         help="삽화를 만들지 않는다 (나중에 `run.py images`로 채울 수 있다)",
     )
     p.add_argument("--no-quality", action="store_true", help="품질 측정을 건너뛴다")
-    p.add_argument(
-        "--limit", type=int, default=None,
-        help="이번 실행에서 처리할 묶음 수 (Gemini RPD 20 조절용, 기본=전부)",
-    )
-    p.add_argument(
-        "--bundle-id", default=None, metavar="ID",
-        help="이 묶음만 작성한다 (예: 20260902-04). --limit 은 앞에서 N편을 자를 뿐이다",
-    )
-    # --no-bundle 은 없앴다. 묶기가 content 단계로 옮겨가 publish 에서는
-    # 할 일이 없다. 묶지 않고 쓰고 싶으면 Content 를 손으로 나누면 된다.
-    p.set_defaults(func=_cmd_publish)
+    p.set_defaults(func=_cmd_collect)
 
     p = sub.add_parser("images", parents=[common], help="작성된 초안에 삽화 추가")
-    
     p.add_argument("--limit", type=int, default=0, help="처리할 글 수 상한 (0=제한 없음)")
     p.add_argument(
         "--days", type=int, default=1,

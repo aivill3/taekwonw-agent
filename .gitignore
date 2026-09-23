@@ -7,7 +7,11 @@ data/raw/
 data/processed/
 data/drafts/
 data/images/
-data/quality/
+# 품질 측정 누적·라벨 셋은 로컬에만 둔다.
+# anchors.npz 만 예외 — Actions 의 주제 판정기(CLASSIFY_LANE)가 읽는다.
+# labels.csv 는 기사 본문을 통째로 담으므로 올리지 않는다.
+data/quality/*
+!data/quality/anchors.npz
 data/stock_licensed/
 data/stock_mark/
 data/stock_original/

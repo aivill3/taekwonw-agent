@@ -37,13 +37,13 @@
   - 체인의 모든 모델이 소진되면 그때 중단한다
 """
 import json
+import re
 import time
 
 import requests
 
 from config.settings import GEMINI_API_KEY, REQUEST_TIMEOUT
 from config.draft_config import (
-    SOLO_THRESHOLD,
     SUBTOPIC_BATCH_SIZE,
     SUBTOPIC_FALLBACK_MODELS as GEMINI_FALLBACK_MODELS,
     SUBTOPIC_MODEL as GEMINI_MODEL,
@@ -74,37 +74,27 @@ def model_chain() -> list[str]:
     """소주제 생성용 모델 체인 (Lite 우선 — 호출이 잦고 정형 작업이라 충분)."""
     return build_chain(GEMINI_MODEL, GEMINI_FALLBACK_MODELS)
 
-# 소주제 개수는 원문 정보량에 맞춘다.
-# 짧은 단신에서 4개를 뽑으면 서로 겹치고, 글도 같은 사실을 되풀이하게 된다.
-# (실측: 600자짜리 단신 → 4개 소주제 → 섹션 1·2가 동일 내용 반복)
-# 소주제 = 초안의 챕터 하나. 그래서 개수를 발행 방식에 맞춰야 한다.
+# 소주제 = 초안의 챕터 하나. 모든 기사는 묶음 재료라 기사 1건이 챕터 1개를 맡는다.
 #
-#   단독 발행(본문 SOLO_THRESHOLD 이상)  기사 하나가 글 한 편 -> 챕터 4개
-#   묶음 발행(그 미만)                    기사 하나가 챕터 하나 -> 소주제 1개
-#
-# 묶음 대상에 3~4개를 만들면 DraftBrief.chapter_count 가 소주제를 합산하므로
-# 3건만 묶어도 챕터가 9~12개가 된다. MAX_CHAPTERS(5)를 크게 넘고, 원래 얇은
-# 기사라 챕터당 쓸 내용이 없어 창작이 시작된다. 묶음의 목적 자체가 무너진다.
-SUBTOPIC_SOLO = 4      # 단독 발행 기사
-SUBTOPIC_BUNDLE = 1    # 묶음 발행 기사 (기사 1건 = 챕터 1개)
+# 긴 기사도 1개만 만든다 (2026-09-17 단독형 폐지). 한 편은 기사 4건 × 챕터 1개로
+# 채우므로, 소주제를 더 만들어도 article_grouper 가 첫 1개만 쓰고 버린다.
+SUBTOPIC_PER_ARTICLE = 1
 
-# 하위 호환: 배치 응답 스키마의 minItems/maxItems 범위로 쓰인다.
-SUBTOPIC_MIN = SUBTOPIC_BUNDLE
-SUBTOPIC_MAX = SUBTOPIC_SOLO
-
-# 본문 전달 상한과 요청 간격은 config/draft_config.py 가 단일 출처다.
-# (SUBTOPIC_PROMPT_BODY_LIMIT / SUBTOPIC_REQUEST_INTERVAL)
+# 배치 응답 스키마의 minItems/maxItems 범위
+SUBTOPIC_MIN = SUBTOPIC_PER_ARTICLE
+SUBTOPIC_MAX = SUBTOPIC_PER_ARTICLE
+# 본문 전달 상한과 요청 간격은 config/draft_config.py 가 단일 출처다
+# (사본을 두면 튜닝이 한쪽에만 반영된다).
 
 
 
 def subtopic_count(body: str) -> int:
-    """발행 방식에 따른 소주제 개수.
+    """기사당 소주제 개수. 본문 길이와 관계없이 1개다.
 
-    기준은 config.draft_config.SOLO_THRESHOLD 하나를 공유한다.
-    노션 '발행구분'(classify_publish_mode)과 같은 값을 봐야, 화면에 '묶음'으로
-    표시된 기사가 소주제 4개를 받는 모순이 생기지 않는다.
+    body 인자는 호출부 호환을 위해 남겨 둔다
+    (_build_payload, _parse_response, _build_batch_payload, _parse_batch_response).
     """
-    return SUBTOPIC_SOLO if len(body) >= SOLO_THRESHOLD else SUBTOPIC_BUNDLE
+    return SUBTOPIC_PER_ARTICLE
 
 
 # 출력 스키마: 소주제 문자열 배열만 받는다

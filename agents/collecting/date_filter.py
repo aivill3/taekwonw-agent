@@ -37,23 +37,28 @@ def parse_dt(value: str) -> datetime | None:
     return dt.replace(tzinfo=KST) if dt.tzinfo is None else dt
 
 
-def resolve_cutoff(last_collected_at: str | None) -> datetime:
+def resolve_cutoff(
+    last_collected_at: str | None, lookback_days: int = LOOKBACK_DAYS
+) -> datetime:
     """필터 기준 시각 결정.
 
     '직전 실행 이후'만 보면 창이 너무 좁다. 같은 사건이 며칠에 걸쳐 보도되거나
     (관련 기사가 하루 뒤에 나오는 경우) 첫 수집에서 본문 추출에 실패한 기사를
-    영영 놓치게 된다. 그래서 LOOKBACK_DAYS 만큼은 항상 거슬러 올라가 다시 훑는다.
+    영영 놓치게 된다. 그래서 lookback_days 만큼은 항상 거슬러 올라가 다시 훑는다.
     이미 처리한 기사는 processed_urls 2차 필터가 걸러내므로 중복 저장은 없다.
+
+    lookback_days 는 레인마다 다르다. 뉴스가 적은 레인(조직)은 창을 넓게 잡고,
+    신선도가 중요한 레인(대회·행사)은 좁게 잡는다. 생략하면 LOOKBACK_DAYS 를 쓴다.
     """
     now = datetime.now(KST)
-    lookback = now - timedelta(days=LOOKBACK_DAYS)
+    lookback = now - timedelta(days=lookback_days)
 
     dt = parse_dt(last_collected_at) if last_collected_at else None
     if dt:
         # 직전 실행 시각과 lookback 중 '더 이른' 쪽을 기준으로 (= 더 넓게 본다)
         cutoff = min(dt, lookback)
         if cutoff < dt:
-            log.info(f"조회 창 확대: 최근 {LOOKBACK_DAYS}일치를 다시 훑습니다")
+            log.info(f"조회 창 확대: 최근 {lookback_days}일치를 다시 훑습니다")
         return cutoff
 
     cutoff = now - timedelta(days=FIRST_RUN_BACKFILL_DAYS)
@@ -61,9 +66,13 @@ def resolve_cutoff(last_collected_at: str | None) -> datetime:
     return cutoff
 
 
-def filter_since(articles: list[Article], last_collected_at: str | None) -> list[Article]:
+def filter_since(
+    articles: list[Article],
+    last_collected_at: str | None,
+    lookback_days: int = LOOKBACK_DAYS,
+) -> list[Article]:
     """기준 시각 이후 발행분만 남긴다. 발행일 파싱 실패 건은 보수적으로 통과시킨다."""
-    cutoff = resolve_cutoff(last_collected_at)
+    cutoff = resolve_cutoff(last_collected_at, lookback_days)
 
     kept, dropped, unknown = [], 0, 0
     for a in articles:

@@ -32,7 +32,7 @@ URL 은 collect_workflow 가 정규화(공백·끝 슬래시 제거)해서 넘�
   파일이 흩어져 있으면 워크플로마다 add 대상을 빠뜨릴 자리가 생긴다.
 """
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from config.settings import KST, STATE_DIR
 from core.logger import get_logger
@@ -45,9 +45,12 @@ STATE_PATH = STATE_DIR / "state.json"
 # 하루 100건 안팎이므로 이 값이면 두 달 넘게 커버한다.
 MAX_PROCESSED_URLS = 5000
 
+# 사건 이력 기본 보관 일수. collect 는 레인 조회일수 최댓값을 넘긴다.
+EVENT_KEEP_DAYS = 7
+
 
 def _empty() -> dict:
-    return {"last_collected_at": None, "processed_urls": []}
+    return {"last_collected_at": None, "processed_urls": [], "written_events": []}
 
 
 def load() -> dict:
@@ -74,7 +77,24 @@ def load() -> dict:
     state["last_collected_at"] = data.get("last_collected_at") or None
     urls = data.get("processed_urls")
     state["processed_urls"] = [u for u in urls if isinstance(u, str)] if isinstance(urls, list) else []
+    events = data.get("written_events")
+    state["written_events"] = [
+        e for e in (events if isinstance(events, list) else [])
+        if isinstance(e, dict)
+        and isinstance(e.get("at"), str)
+        and isinstance(e.get("tokens"), str)
+    ]
     return state
+
+
+def recent_events(state: dict, days: int = EVENT_KEEP_DAYS) -> list[set[str]]:
+    """최근 days 일 안에 초안에 쓴 사건의 시그니처 목록."""
+    cutoff = (datetime.now(KST) - timedelta(days=days)).isoformat(timespec="seconds")
+    return [
+        set(e["tokens"].split())
+        for e in state.get("written_events", [])
+        if e["at"] >= cutoff and e["tokens"]
+    ]
 
 
 def save(state: dict) -> None:
@@ -86,6 +106,7 @@ def save(state: dict) -> None:
     payload = {
         "last_collected_at": state.get("last_collected_at"),
         "processed_urls": state.get("processed_urls", [])[-MAX_PROCESSED_URLS:],
+        "written_events": state.get("written_events", []),
         "updated": datetime.now(KST).isoformat(timespec="seconds"),
     }
     try:
@@ -97,9 +118,18 @@ def save(state: dict) -> None:
 
 
 def mark_processed(
-    state: dict, urls: list[str], collected_until: str | None = None
+    state: dict,
+    urls: list[str],
+    collected_until: str | None = None,
+    *,
+    events: list[set[str]] | None = None,
+    keep_days: int = EVENT_KEEP_DAYS,
 ) -> dict:
     """처리 완료 URL 을 더하고 수집 기준 시각을 갱신한 뒤 저장한다.
+
+    events 는 이번에 초안에 쓴 기사의 사건 시그니처다. keep_days 보다 오래된
+    이력은 여기서 지운다. 토큰은 공백으로 이어 한 문자열로 둔다 — 목록으로
+    두면 토큰마다 따옴표·쉼표·줄바꿈이 붙어 state.json 이 몇 배로 커진다.
 
     collected_until 이 기존 값보다 과거면 무시한다. 발행일이 뒤죽박죽인 기사가
     섞였을 때 기준이 뒤로 밀리면, 이미 처리한 구간을 다시 훑게 된다.
@@ -107,6 +137,13 @@ def mark_processed(
     known = set(state.get("processed_urls", []))
     added = [u for u in urls if u and u not in known]
     state["processed_urls"] = state.get("processed_urls", []) + added
+
+    now = datetime.now(KST)
+    cutoff = (now - timedelta(days=keep_days)).isoformat(timespec="seconds")
+    kept = [e for e in state.get("written_events", []) if e["at"] >= cutoff]
+    stamp = now.isoformat(timespec="seconds")
+    new = [{"at": stamp, "tokens": " ".join(sorted(sig))} for sig in (events or []) if sig]
+    state["written_events"] = kept + new
 
     if collected_until:
         previous = state.get("last_collected_at")
@@ -121,5 +158,6 @@ def mark_processed(
     log.info(
         f"상태 갱신: 처리 URL {len(added)}건 추가 "
         f"(누적 {len(state['processed_urls'])}건, 기준 {state.get('last_collected_at')})"
+        + (f" · 사건 이력 {len(new)}건 추가 (보관 {len(state['written_events'])}건)" if new else "")
     )
     return state

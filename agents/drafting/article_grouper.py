@@ -1,17 +1,12 @@
 """수집된 기사를 글 단위로 묶는다.
 
-챕터 4개 고정
-------------
-한 편은 항상 챕터 4개다. 두 가지 경로로 4개를 채운다.
+한 편 = 기사 4건 × 챕터 1개
+--------------------------
+모든 기사는 소주제 1개를 받고, 기사 4건이 모여 한 편이 된다. 본문 길이는
+묶음 여부를 정하지 않는다 (2026-09-17 단독형 폐지).
 
-    단독형   긴 기사 1건이 소주제 4개를 가진다.
-    묶음형   짧은 기사 4건이 소주제 1개씩 낸다.
-
-4개를 못 채우면 발행하지 않고 보류한다. 3개짜리 글을 억지로 2,000자로
+4건을 못 채우면 발행하지 않고 보류한다. 3건짜리 글을 억지로 2,000자로
 늘리면 창작이 들어가기 때문이다. 남은 기사는 다음 수집분과 합친다.
-
-이 규칙 때문에 '긴 기사인데 소주제가 1개뿐'인 경우가 단독으로 빠지지
-않는다. 그런 기사는 묶음 재료로 돌려 챕터 하나를 맡긴다.
 
 두 가지 묶음 방식
 ----------------
@@ -30,13 +25,19 @@
 
 묶음 규칙
 --------
-    1) 긴 기사 + 소주제 4개 -> 단독 주제형
-    2) 나머지는 주제 유사도로 4건씩 묶음
-    3) 그래도 남으면 날짜형으로 4건씩
-    4) 4건을 못 채우면 보류
+    1) 주제 유사도로 4건씩 묶음
+    2) 그래도 남으면 날짜형으로 4건씩
+    3) 4건을 못 채우면 보류
 
-길이가 "단독으로 갈 수 있는가"를 정하고, 주제 유사도가 "함께 갈 수
-있는가"를 정한다. 둘은 다른 축이다.
+길이는 '재료로 쓸 수 있는가'(MIN_SOURCE_CHARS)만 정하고, 주제 유사도가
+'함께 갈 수 있는가'를 정한다.
+
+순서
+----
+들어온 순서를 지킨다. collect 는 키워드 하나의 기사만, 네이버 검색 순서로 넘긴다.
+  - 묶음 안의 기사(챕터) 순서 = 들어온 순서
+  - 묶음 사이의 순서 = 각 묶음에서 가장 앞선 기사의 위치
+주제형·날짜형을 구분하지 않고 이 위치로만 줄 세운다. 슬롯은 앞 묶음부터 받는다.
 """
 
 from __future__ import annotations
@@ -44,11 +45,10 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import date
 
-from config.draft_config import MIN_SOURCE_CHARS, SOLO_THRESHOLD
-from agents.drafting.draft_prompt import DraftBrief, SourceArticle
+from agents.drafting.draft_prompt import MIN_SOURCE_CHARS, DraftBrief, SourceArticle
 from agents.drafting.corpus_retriever import tokenize
 
-# 한 편의 챕터 수. 단독형은 소주제 4개, 묶음형은 기사 4건으로 채운다.
+# 한 편의 챕터 수. 기사 4건이 1개씩 채운다.
 CHAPTERS_PER_POST = 4
 
 # 묶음 하나의 기사 수. 챕터 수와 같다 (기사 1건 = 챕터 1개).
@@ -83,26 +83,16 @@ class Group:
 # ── 발행 구분 (선정 단계에서 노션에 표시) ──────────────
 # publish 단계에 가서야 알 수 있던 것을 선정 시점에 미리 알려준다.
 # 승인 게이트에서 "이 기사만 승인하면 글이 안 나온다"를 알 수 있어야 하기 때문이다.
-MODE_SOLO = "단독"    # 혼자서 한 편이 된다
-MODE_BUNDLE = "묶음"  # 다른 기사 3건과 묶어야 한 편이 된다
+MODE_BUNDLE = "묶음"  # 다른 기사 3건과 묶어 한 편이 된다
 MODE_HOLD = "보류"    # 재료로 쓰기에도 부족하다
 
 
 def classify_publish_mode(source_chars: int) -> str:
-    """본문 길이로 발행 방식을 판정한다.
+    """본문 길이로 묶음 재료가 될 수 있는지 판정한다.
 
-    주의: 여기서 '단독'이라고 표시해도 소주제가 4개 미만이면 group_articles()
-    는 단독으로 보내지 않는다. 이 함수는 소주제 생성 '전에' 호출되어 개수를
-    알 수 없기 때문이다. 그래서 '단독'은 예고이지 확정이 아니다.
-
-    또한 인자로 받는 길이는 SourceArticle.source_chars 와 같은 기준이어야
-    한다. len(body_clean) 을 넘기면 제목·소주제 길이가 빠져 경계선 기사에서
-    group_articles() 와 판정이 갈린다. (실측: 1,247자 기사가 소주제 생성
-    단계에서는 '짧음'으로 분류돼 소주제 1개만 받고, 묶기 단계에서는 '김'으로
-    분류돼 단독으로 빠졌다 — 챕터 1개짜리 글이 되는 조합)
+    모든 기사는 묶음 재료다. 길이는 '단독으로 갈 수 있는가'를 더 이상 정하지
+    않고, 챕터 하나를 채울 내용이 있는지(MIN_SOURCE_CHARS)만 본다.
     """
-    if source_chars >= SOLO_THRESHOLD:
-        return MODE_SOLO
     if source_chars >= MIN_SOURCE_CHARS:
         return MODE_BUNDLE
     return MODE_HOLD
@@ -241,13 +231,11 @@ def _cluster_by_topic(articles: list[SourceArticle]) -> list[list[SourceArticle]
 
 
 def _as_one_chapter(article: SourceArticle) -> SourceArticle:
-    """묶음 재료용으로 소주제를 1개로 줄인 사본을 만든다.
+    """소주제를 1개로 줄인 사본을 만든다.
 
-    묶음은 기사 1건이 챕터 1개를 맡는다. 소주제가 4개인 기사가 섞이면
-    챕터가 4+1+1+1 = 7개가 되어 4개 고정이 깨진다.
-
-    원본을 고치지 않고 사본을 쓰는 이유: 같은 기사가 이번 회차에 묶이지
-    못하고 다음 회차에서 단독으로 갈 수도 있다. 그때 소주제 4개가 필요하다.
+    새로 생성되는 기사는 소주제가 1개뿐이다. 단독형 시절에 소주제 4개를 받은
+    카드가 '선정됨'으로 남아 있으면, 첫 소주제만 써서 챕터 1개로 맞춘다.
+    섞인 채로 두면 챕터가 4+1+1+1 = 7개가 되어 4개 고정이 깨진다.
     """
     if len(article.subtopics) <= 1:
         return article
@@ -307,7 +295,7 @@ def group_articles(
     articles: list[SourceArticle],
     day: date | None = None,
 ) -> list[Group]:
-    """수집된 기사를 글 단위로 묶는다. 한 편은 항상 챕터 4개다.
+    """수집된 기사를 4건씩 묶는다. 기사 1건이 챕터 1개를 맡는다.
 
     반환된 Group 중 kind가 'held'인 것은 발행하지 않고 다음 수집분과
     합쳐야 한다. 지금 쓰면 대부분 창작이 되기 때문이다.
@@ -315,68 +303,52 @@ def group_articles(
     if not articles:
         return []
 
-    groups: list[Group] = []
+    # 모든 기사가 묶음 재료다. 기사 1건이 챕터 1개를 맡는다.
+    materials = [_as_one_chapter(a) for a in articles]
 
-    # ── 1) 단독 주제형 ────────────────────────────────
-    # 길이와 소주제 개수를 모두 만족해야 한다. 길이만 보면 소주제가
-    # 1개뿐인 기사가 단독으로 빠져 '챕터 1개로 2,000자'가 된다.
-    solo: list[SourceArticle] = []
-    rest: list[SourceArticle] = []
-    for a in articles:
-        if a.source_chars >= SOLO_THRESHOLD and len(a.subtopics) >= CHAPTERS_PER_POST:
-            solo.append(a)
-        else:
-            rest.append(a)
+    # 들어온 위치. 사본(materials)을 그대로 묶으므로 객체 id 로 찾는다.
+    # url 은 비어 있거나 겹칠 수 있어 키로 쓰지 않는다.
+    pos = {id(m): i for i, m in enumerate(materials)}
 
-    for art in solo:
-        # 소주제가 5개 이상이면 앞 4개만 쓴다.
-        trimmed = (
-            art if len(art.subtopics) == CHAPTERS_PER_POST
-            else replace(art, subtopics=art.subtopics[:CHAPTERS_PER_POST])
-        )
-        groups.append(
-            Group(
-                brief=DraftBrief(
-                    articles=[trimmed],
-                    title_hint=trimmed.title,
-                    matched_keyword=trimmed.matched_keyword or trimmed.title,
-                ),
-                kind="topic",
-                reason=(
-                    f"단독 주제형 ({trimmed.source_chars}자, 기준 {SOLO_THRESHOLD}자 이상 "
-                    f"· 소주제 {CHAPTERS_PER_POST}개)"
-                ),
-            )
-        )
+    def first_pos(pack: list[SourceArticle]) -> int:
+        return min(pos[id(a)] for a in pack)
 
-    # 묶음 재료는 기사 1건이 챕터 1개를 맡는다.
-    materials = [_as_one_chapter(a) for a in rest]
+    complete: list[tuple[int, Group]] = []
 
-    # ── 2) 주제형 묶음 (4건씩) ────────────────────────
+    # ── 1) 주제형 묶음 (4건씩) ────────────────────────
+    # 클러스터 안의 기사는 들어온 순서라, 앞선 4건이 먼저 묶인다.
     leftovers: list[SourceArticle] = []
     for cluster in _cluster_by_topic(materials):
         packs, remainder = _pack_four(cluster)
         for pack in packs:
-            groups.append(
+            complete.append((
+                first_pos(pack),
                 _make_group(
                     pack, "topic",
                     f"주제 묶음 {BUNDLE_SIZE}건 (공통 주제어 발견)", day,
-                )
-            )
+                ),
+            ))
         leftovers.extend(remainder)
 
-    # ── 3) 날짜형 묶음 (4건씩) ────────────────────────
+    # ── 2) 날짜형 묶음 (4건씩) ────────────────────────
     # 주제가 서로 달라도 4건이 모이면 '오늘의 소식'으로 한 편이 된다.
+    # 남은 기사는 클러스터 단위로 모였으므로 들어온 순서로 다시 세운다.
+    leftovers.sort(key=lambda a: pos[id(a)])
     packs, remainder = _pack_four(leftovers)
     for pack in packs:
-        groups.append(
+        complete.append((
+            first_pos(pack),
             _make_group(
                 pack, "daily",
                 f"날짜 묶음 {BUNDLE_SIZE}건 (주제가 서로 다름)", day,
-            )
-        )
+            ),
+        ))
 
-    # ── 4) 보류 ───────────────────────────────────────
+    # 주제형·날짜형 구분 없이 가장 앞선 기사의 위치로 줄 세운다.
+    complete.sort(key=lambda pg: pg[0])
+    groups: list[Group] = [g for _, g in complete]
+
+    # ── 3) 보류 ───────────────────────────────────────
     # 4건을 못 채운 나머지. 상태를 바꾸지 않고 다음 수집분과 합친다.
     if remainder:
         groups.append(

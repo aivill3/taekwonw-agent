@@ -2,7 +2,8 @@
 
 파이프라인 전 구간이 이 Article 하나를 들고 다닌다. 단계마다 필드가 채워진다.
 
-    수집    title, url, source, press, published, summary
+    수집    title, url, source, press, published, summary,
+            search_keyword, search_rank         (tools/naver_news_client)
     추출    body                      (tools/article_fetcher)
     정제    body_clean                (agents/collecting/body_cleaner)
     저장    page_id                   (tools/notion_store)
@@ -37,10 +38,12 @@ class Article:
     # ── 수집 단계 ──
     title: str = ""
     url: str = ""
-    source: str = ""          # "naver" | "google_rss" | "manual"
+    source: str = ""          # "naver" | "manual"
     press: str = ""           # 언론사명
     published: str = ""       # ISO 8601 (KST)
-    summary: str = ""         # RSS/API가 준 요약. 본문 추출 실패 시의 보험
+    summary: str = ""         # API가 준 요약. 본문 추출 실패 시의 보험
+    search_keyword: str = ""  # 이 기사를 찾은 검색 키워드 (중복이면 앞 키워드)
+    search_rank: int = 0      # 그 키워드 검색 결과에서의 순위 (1부터, 네이버 응답 순서)
 
     # ── 본문 ──
     body: str = ""            # 추출 원본 (정제 전)
@@ -111,8 +114,9 @@ def _title_key(title: str) -> str:
 def dedupe(articles: list[Article]) -> list[Article]:
     """URL 정규화 + 제목으로 중복 기사를 제거한다. 먼저 온 것을 남긴다.
 
-    먼저 온 쪽을 남기는 이유: collect_workflow 는 네이버를 먼저 수집한다.
-    네이버 API가 준 발행일이 RSS 파싱본보다 정확한 경우가 많다.
+    먼저 온 쪽을 남기는 이유: naver_news_client.collect_all() 은 키워드 순서,
+    그 안에서는 검색 순위 순서로 이어 붙인다. 먼저 온 쪽이 앞 키워드·상위
+    순위이므로, 검색 화면의 순서와 키워드 우선순위가 그대로 지켜진다.
     """
     seen_url: set[str] = set()
     seen_title: set[str] = set()
