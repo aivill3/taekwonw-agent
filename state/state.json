@@ -1,5 +1,5 @@
 {
-  "last_collected_at": "2026-09-23T11:01:00+09:00",
+  "last_collected_at": "2026-09-23T14:24:00+09:00",
   "processed_urls": [
     "https://www.bzeronews.com/news/articleView.html?idxno=821398",
     "https://www.headlinejeju.co.kr/news/articleView.html?idxno=597679",
@@ -1452,7 +1452,19 @@
     "http://www.metroseoul.co.kr/article/20260922500576",
     "https://m.joongdo.co.kr/view.php?key=20260922010007216",
     "https://www.startuptoday.co.kr/news/articleView.html?idxno=814054",
-    "https://cunews.net/detail.php?number=172619&thread=22r12r03"
+    "https://cunews.net/detail.php?number=172619&thread=22r12r03",
+    "https://www.newsis.com/view/NISI20260917_0021441782",
+    "https://biz.heraldcorp.com/article/10882602?ref=naver",
+    "https://www.ccdn.co.kr/news/articleView.html?idxno=1100314",
+    "https://www.newsis.com/view/NISI20260917_0021441781",
+    "http://www.areyou.co.kr/news/articleView.html?idxno=95489",
+    "https://www.newsis.com/view/NISX20260922_0003800197",
+    "https://www.news1.kr/industry/distribution/6298404",
+    "https://www.newsis.com/view/NISX20260921_0003797650",
+    "https://www.xportsnews.com/article/2199344",
+    "https://www.wikitree.co.kr/articles/1161610",
+    "https://www.newsis.com/view/NISX20260921_0003797650"
   ],
-  "updated": "2026-09-23T11:16:30+09:00"
+  "written_events": [],
+  "updated": "2026-09-23T14:46:58+09:00"
 }
