@@ -53,6 +53,7 @@ from config.draft_config import (
     WRITER_MODEL as GEMINI_WRITER_MODEL,
 )
 from core.logger import get_logger
+from core.text_metrics import prose_chars
 from agents.drafting.corpus_retriever import BlogCorpus
 from agents.drafting.draft_prompt import DraftBrief, SourceArticle, build_prompt
 from agents.drafting.draft_postprocessor import postprocess
@@ -275,6 +276,30 @@ def _generate(item: dict, model: str, corpus: BlogCorpus | None) -> str:
     return ""
 
 
+def _length_summary(markdown: str, item: dict) -> str:
+    """초안 분량 로그 문구. 마크다운 길이와 순수 본문 길이를 함께 보여준다.
+
+    목표 분량(1,700~1,900자 등)은 순수 본문(prose_chars) 기준이다. 마크다운
+    길이만 찍으면 줄바꿈·표·제목까지 세어 초과로 오인하기 쉽다.
+    (2026-09-23: '2,321자'로 찍힌 초안의 순수 본문은 1,966자였다)
+    편별 값은 metrics.jsonl 에도 남지만 Actions 에서는 러너와 함께 사라지므로
+    로그 한 줄로 확인할 수 있게 한다.
+    """
+    body = prose_chars(markdown)
+    text = f"마크다운 {len(markdown):,}자 · 본문 {body:,}자"
+    brief = item.get("brief")
+    if brief is None:
+        return text
+    lo, hi, _ = brief.target_length()
+    if body > hi:
+        verdict = f"{body - hi:,}자 초과"
+    elif body < lo:
+        verdict = f"{lo - body:,}자 부족"
+    else:
+        verdict = "범위 안"
+    return f"{text} / 목표 {lo:,}~{hi:,}자 → {verdict}"
+
+
 def write_all(items: list[dict]) -> list[dict]:
     """승인 항목들에 블로그 원고를 채운다.
 
@@ -342,7 +367,7 @@ def write_all(items: list[dict]) -> list[dict]:
         item["model"] = chain[model_idx]  # 어느 모델이 썼는지 기록 (검토 강도 판단용)
         result.append(item)
         first_line = markdown.split("\n", 1)[0].removeprefix("# ")
-        log.info(f"초안 작성: {first_line[:50]} ({len(markdown)}자)")
+        log.info(f"초안 작성: {first_line[:50]} ({_length_summary(markdown, item)})")
 
     log.info(f"초안 작성 완료 {len(result)}/{len(items)}건")
     return result
