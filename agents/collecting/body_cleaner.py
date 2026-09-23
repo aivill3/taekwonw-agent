@@ -98,7 +98,28 @@ SECTION_HEADERS = (
     "주요뉴스", "주요 뉴스", "핫이슈", "실시간 뉴스", "최신기사", "최신 기사",
     "이시각 주요뉴스", "포토뉴스", "많이 읽은 기사", "베스트 클릭",
     "이 기사 어때요", "함께 보면 좋은 기사", "오늘의 주요뉴스",
+    "관련 키워드", "관련키워드", "제보하기",
 )
+
+# 줄바꿈 없이 한 덩어리로 들어온 본문에서 쓰는 머리글. SECTION_HEADERS 보다
+# 좁게 잡는다 — 줄 경계라는 안전장치 없이 문장 중간에서 찾기 때문이다.
+# 앞 글자에 '붙어' 나올 때만 머리글로 본다. 본문 문장의 '관련 기사를 참고해'는
+# 앞에 공백이 있고, 사이트가 줄바꿈을 잃고 이어 붙인 머리글은 공백이 없다.
+# (실측 2026-09-23: 뉴스1 포토 기사가 '…/뉴스1관련 키워드춘천태권도…관련 기사…'
+#  로 한 줄이 돼, 설악산 등산객·시내버스 노선 같은 다른 기사 제목 6건이
+#  본문으로 남았다. 같은 대회의 KBS 단신과 같은 사건으로 묶이지 못한 원인)
+INLINE_SECTION_HEADERS = ("관련 키워드", "관련키워드", "관련 기사", "관련기사")
+RE_INLINE_SECTION = re.compile(
+    r"(?<=[^\s])(?:" + "|".join(map(re.escape, INLINE_SECTION_HEADERS)) + r")"
+)
+
+# 뉴스 사이트의 화면 안내 문구 줄. 기사 내용이 아니다.
+# (실측 2026-09-23 KBS: '기사 본문 영역', '읽어주기 기능은 크롬기반의 /
+#  브라우저에서만 사용하실 수 있습니다.')
+RE_UI_LINE = re.compile(
+    r"^\s*(?:기사\s*본문\s*영역|읽어주기\s*기능|브라우저에서만\s*사용)"
+)
+UI_LINE_MAX = 40
 SECTION_HEADER_MAX_LEN = 20  # 이보다 긴 줄은 머리글이 아니라 본문 문장으로 본다
 
 # 머리글을 '절단점'으로 인정하려면 그 앞에 이만큼의 본문이 있어야 한다.
@@ -222,6 +243,8 @@ def remove_boilerplate_lines(text: str) -> str:
             ln = RE_COPYRIGHT_NOTICE.sub(" ", ln)
         if RE_BYLINE.match(ln):
             continue
+        if len(ln.strip()) <= UI_LINE_MAX and RE_UI_LINE.match(ln):
+            continue
         kept.append(ln)
     return "\n".join(kept)
 
@@ -310,6 +333,20 @@ def truncate_at_section_header(text: str) -> str:
     return "\n".join(kept)
 
 
+def truncate_at_inline_header(text: str) -> str:
+    """앞 글자에 붙어 나온 관련기사 머리글부터 끝까지 절단한다.
+
+    truncate_at_section_header 는 줄 단위라, 본문이 줄바꿈 없이 한 덩어리로
+    오면 머리글을 못 찾는다. 여기서는 문장 중간을 보되 두 조건을 둔다.
+      - 머리글이 앞 글자에 공백 없이 붙어 있어야 한다 (RE_INLINE_SECTION)
+      - 그 앞에 MIN_BODY_BEFORE_HEADER 이상의 본문이 있어야 한다
+    """
+    for m in RE_INLINE_SECTION.finditer(text):
+        if len(text[: m.start()].strip()) >= MIN_BODY_BEFORE_HEADER:
+            return text[: m.start()].rstrip()
+    return text
+
+
 def remove_edge_list_blocks(text: str) -> str:
     """본문 '앞머리'와 '끝'에 연속으로 붙은 목록 줄 블록을 제거한다.
       - 끝 블록   : 관련기사 / 많이 본 뉴스 / 제보·앱 홍보
@@ -385,6 +422,7 @@ CLEAN_STEPS = (
     ("무표식 캡션", remove_unmarked_caption_lines),
     ("(끝) 절단", truncate_at_terminator),
     ("섹션 머리글 절단", truncate_at_section_header),
+    ("붙은 머리글 절단", truncate_at_inline_header),
     ("양끝 목록 블록", remove_edge_list_blocks),
     ("이메일", strip_emails),
     ("외국어 줄", remove_foreign_lines),
