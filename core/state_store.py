@@ -1,8 +1,10 @@
 """실행 간 상태 저장 (state/state.json).
 
-담는 것은 두 가지다.
+담는 것은 네 가지다.
   last_collected_at  마지막으로 수집한 기사의 발행 시각
   processed_urls     이미 Notion 에 저장한 기사 URL
+  written_events     초안에 쓴 사건의 시그니처 (keep_days 동안)
+  held               선정됐지만 4건을 못 채워 보류된 기사 (본문 포함)
 
 '지금 시각'이 아니라 '마지막 기사의 발행 시각'을 남기는 이유:
   RSS 는 기사가 나오고 한참 뒤에 항목을 노출한다. 실행 시각을 기준으로 잘라
@@ -30,6 +32,15 @@ URL 은 collect_workflow 가 정규화(공백·끝 슬래시 제거)해서 넘�
 
   stock_usage.json · model_state.json 과 같은 자리에 둔다. 성격이 같은
   파일이 흩어져 있으면 워크플로마다 add 대상을 빠뜨릴 자리가 생긴다.
+
+held 를 따로 두는 이유 (2026-09-28):
+  예전에는 보류 기사를 이력에 안 남기기만 했다. 다음 실행이 날짜 창 안에서
+  처음부터 다시 셌고, 창이 3일인 레인은 4건이 모이기 전에 보류분이 창 밖으로
+  빠져 발행이 멈췄다 (Slack 보류 6 → 5 → 3 → 2, 발행 0편).
+  채우고 읽는 규칙(기한·합류·갱신)은 collect_workflow 가 가진다
+  (_load_held / _held_entries). 여기서는 형식만 지키고 그대로 싣고 내린다.
+  collect_workflow 가 st["held"] 를 통째로 바꿔 넣은 뒤 mark_processed 를
+  부르므로, 저장은 save() 가 payload 에 담기만 하면 된다.
 """
 import json
 from datetime import datetime, timedelta
@@ -50,7 +61,13 @@ EVENT_KEEP_DAYS = 7
 
 
 def _empty() -> dict:
-    return {"last_collected_at": None, "processed_urls": [], "written_events": []}
+    # held: [{"lane": 레인 이름, "held_since": ISO, "article": Article.to_dict()}]
+    return {
+        "last_collected_at": None,
+        "processed_urls": [],
+        "written_events": [],
+        "held": [],
+    }
 
 
 def load() -> dict:
@@ -84,6 +101,14 @@ def load() -> dict:
         and isinstance(e.get("at"), str)
         and isinstance(e.get("tokens"), str)
     ]
+    # 보류 기사. 모양이 깨진 항목만 버린다 — 기사 필드 검사(Article 복원)는
+    # collect_workflow._load_held 가 한다. 여기서 Article 을 알면 state 가
+    # 모델에 묶인다.
+    held = data.get("held")
+    state["held"] = [
+        h for h in (held if isinstance(held, list) else [])
+        if isinstance(h, dict) and isinstance(h.get("article"), dict)
+    ]
     return state
 
 
@@ -107,6 +132,7 @@ def save(state: dict) -> None:
         "last_collected_at": state.get("last_collected_at"),
         "processed_urls": state.get("processed_urls", [])[-MAX_PROCESSED_URLS:],
         "written_events": state.get("written_events", []),
+        "held": state.get("held", []),
         "updated": datetime.now(KST).isoformat(timespec="seconds"),
     }
     try:
@@ -159,5 +185,6 @@ def mark_processed(
         f"상태 갱신: 처리 URL {len(added)}건 추가 "
         f"(누적 {len(state['processed_urls'])}건, 기준 {state.get('last_collected_at')})"
         + (f" · 사건 이력 {len(new)}건 추가 (보관 {len(state['written_events'])}건)" if new else "")
+        + f" · 보류 {len(state.get('held', []))}건"
     )
     return state

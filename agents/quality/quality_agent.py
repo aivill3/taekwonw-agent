@@ -170,12 +170,11 @@ def format_report(report: QualityReport, max_hits: int = 20) -> str:
     """사람이 읽을 요약 텍스트. Slack 알림·Notion 본문에 그대로 붙일 수 있다."""
     lines: list[str] = []
     status = "PASS" if report.passed else "BLOCKED"
-    # char_count는 줄바꿈·빈 줄을 포함한 원시 길이다. 아래 '구조' 항목의
-    # 본문 글자 수(seo.body_chars)는 줄바꿈을 뺀 값이라 서로 다르다.
-    # 네이버 형식은 20자마다 줄을 끊어 격차가 20%를 넘기도 한다.
-    # 프롬프트가 지시하는 분량 기준은 seo.body_chars 쪽이다.
-    lines.append(f"[{status}] 원시 {report.char_count}자 / "
-                 f"{report.morphology.sentence_count}문장")
+    # 분량은 순수 본문(seo.body_chars) 하나만 보인다. 프롬프트가 지시하는
+    # 기준이 이 값이다. char_count(줄바꿈 포함 원시 길이)는 리포트 필드로만
+    # 남기고 표시하지 않는다 — 함께 보이면 목표와 잘못 비교하게 된다.
+    size = f"본문 {report.seo.body_chars:,}자 / " if report.seo is not None else ""
+    lines.append(f"[{status}] {size}{report.morphology.sentence_count}문장")
     lines.append("")
 
     s = report.sentiment
@@ -225,8 +224,7 @@ def format_report(report: QualityReport, max_hits: int = 20) -> str:
         s2 = report.seo
         lines.append(f"■ 구조 ({s2.format})")
         lines.append(
-            f"  제목 {s2.title_length}자 / 챕터 {s2.chapter_count}개 / "
-            f"순수 본문 {s2.body_chars}자 (줄바꿈 제외)"
+            f"  제목 {s2.title_length}자 / 챕터 {s2.chapter_count}개"
         )
         if s2.format == "naver_blog":
             lines.append(

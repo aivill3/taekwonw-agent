@@ -4,12 +4,13 @@
 ----
   상태 로드 → 네이버 수집(레인별 · 검색 순서) → 날짜 필터 → 처리 이력 제외
   → 본문 추출 · 정제
-  → 주제 판정 (문장 임베딩, CLASSIFY_LANE 레인의 후보만 좁힌다)
+  → 보류분 합류 (state.held, 날짜 창과 무관)
+  → 주제 판정 (문장 임베딩) → 레인 재배치 (조직 판정은 조직 레인으로)
   → [레인별] 선정 (보도 매체 수 · 주제 적합성 · 같은 사건 제거, 레인 간 포함)
   → 소주제 생성 (LLM #1, 모든 레인분을 한 번에 배치)
   → [레인별] 4건씩 묶기
   → 초안 작성 (LLM #2) → Content DB 저장 → 삽화 → 로컬 저장
-  → 처리 이력 기록
+  → 처리 이력 · 사건 이력 · 보류 목록 기록
 
 뉴스 DB 를 쓰지 않는다 (2026-09-17)
 ---------------------------------
@@ -48,9 +49,20 @@
     (실측 2026-09-23: 오전 조직 글의 '국제대회 3종 춘천 유치'가 다른 매체
      기사로 오후 조직 레인 후보에 다시 올라왔다)
 남기지 않는 것 — LOOKBACK_DAYS 안에서 다음 실행의 후보가 된다
-  - 선정되지 않은 기사, 4건을 못 채워 보류된 기사
-  - 소주제·초안 생성이나 Content 저장이 실패한 기사
+  - 선정되지 않은 기사
   - 본문 추출·정제에 실패한 기사
+
+보류 목록(state.held) — 날짜 창과 무관하게 다음 실행의 후보가 된다 (2026-09-28)
+  - 선정됐지만 4건을 못 채워 발행되지 않은 기사
+  - 소주제·초안 생성이나 Content 저장이 실패한 묶음의 기사
+  본문까지 저장해 두고, 발행되면 처리 이력으로 옮겨 가며,
+  발행일이 HELD_MAX_DAYS 를 넘으면 버린다. 사건 이력·레인 간 제외는
+  매 실행 다시 거치므로, 그사이 다른 글이 다룬 사건은 여기서 걸러진다.
+
+  예전에는 이 기사들을 이력에 안 남기기만 했다('다음 실행으로 넘깁니다').
+  다음 실행이 날짜 창 안에서 처음부터 다시 셌고, 창이 3일인 레인은 4건이
+  모이기 전에 보류분이 창 밖으로 빠졌다
+  (실측 2026-09-23~28: Slack 보류 6 → 5 → 3 → 2, 발행 0편).
 
 한 번에 쓰는 양
 --------------
@@ -76,15 +88,15 @@
 import csv
 import os
 from collections import Counter
-from dataclasses import replace
-from datetime import datetime
+from dataclasses import fields, replace
+from datetime import datetime, timedelta
 
 from core import state_store as state
 from agents.collecting.body_cleaner import clean_all
 from tools import naver_news_client
-from config.collect_config import LANES, POSTS_PER_KEYWORD
+from config.collect_config import HELD_MAX_DAYS, LANES, POSTS_PER_KEYWORD
 from config.settings import KST, PROCESSED_DIR
-from agents.collecting.date_filter import filter_since, latest_published
+from agents.collecting.date_filter import filter_since, latest_published, parse_dt
 from tools.article_fetcher import extract_all
 from core.logger import get_logger, setup
 from core.article_models import Article, canonical_url, dedupe
@@ -118,6 +130,11 @@ log = get_logger(__name__)
 #   대한태권도협회  30건 중  4건              13%
 # 뒤의 둘은 조직이 '주최자'로만 언급된다. 키워드를 바꿔도 조직명이
 # 기사에 나오기만 하면 걸리므로 키워드로는 고칠 수 없다.
+#
+# 거르지 않고 옮긴다 (2026-09-28): 예전에는 조직 레인에서 '조직'이 아닌
+# 기사를 빼기만 했고, 빠진 기사는 어느 레인에도 가지 않았다. 조직 키워드
+# 기사의 대부분은 조직이 주최자로만 나오는 대회 기사라, 대회 레인이
+# 굶는 사이 그 기사들이 매 실행 버려지고 있었다 (_reassign_by_verdict).
 CLASSIFY_LANE = os.getenv("CLASSIFY_LANE", "조직").strip()
 
 
@@ -214,9 +231,227 @@ def _pool(lanes: dict[str, list[Article]]) -> list[Article]:
     )
 
 
+def _reassign_by_verdict(
+    lanes: dict[str, list[Article]], verdicts: dict[str, str]
+) -> dict[str, list[Article]]:
+    """주제 판정으로 레인을 다시 나눈다 — 거르지 않고 옮긴다.
+
+    예전에는 조직 레인에서 '조직'이 아닌 기사를 빼기만 했다. 빠진 기사는
+    어느 레인에도 가지 않고 사라졌다 (실측 2026-09-24: 조직 후보 20건 중
+    15건 소실, 같은 실행의 대회 레인 후보는 1건).
+
+      판정 = 조직                    → 조직 레인 (키워드 무관)
+      조직 키워드 + 판정 ≠ 조직      → 판정 레인 (키워드 배정이 없으므로)
+      그 밖                          → 검색 키워드 레인 유지
+
+    두 번째 줄만 대회↔태권도 판정(정확도 79%)을 쓴다. 조직 키워드 기사에는
+    대신 쓸 키워드 배정이 없고, 버리는 것보다 79% 로 배정하는 편이 낫다.
+
+    옮겨 간 기사는 도착 레인의 조회일수로 다시 거른다. 수집 창은 출발
+    레인 기준이라, 조직(14일)에서 대회(3일)로 옮긴 기사가 2주 전 대회
+    소식을 싣고 간다 (실측 2026-09-28 dry-run: 9/15 품새선수권 개막 기사가
+    대회 레인 3위로 선정). 보류분은 이미 도착 레인 소속이라 여기 걸리지
+    않고 HELD_MAX_DAYS 를 따른다.
+    날짜 필터는 직전 수집 시각까지 창을 넓히지만(resolve_cutoff) 여기서는
+    '지금 − 조회일수'만 본다. 월요일 실행에서 옮겨 온 기사는 날짜 필터보다
+    조금 좁게 걸린다 — 신선도를 위해 넓히지 않는다.
+
+    한 기사가 여러 키워드로 들어와 같은 레인에 모이면 먼저 온 것만 남긴다
+    (레인 순서 = 우선순위, _split_by_lane 과 같은 규칙).
+    """
+    now = datetime.now(KST)
+    cutoffs = {l.name: now - timedelta(days=l.lookback_days) for l in LANES}
+
+    out: dict[str, list[Article]] = {name: [] for name in lanes}
+    seen: dict[str, set[str]] = {name: set() for name in lanes}
+    moved: Counter = Counter()
+    stale: Counter = Counter()
+    dropped = 0
+
+    for name, arts in lanes.items():
+        for a in arts:
+            url = canonical_url(a.url)
+            verdict = verdicts.get(url)
+            if verdict == ORG:
+                target = CLASSIFY_LANE
+            elif name == CLASSIFY_LANE:
+                target = verdict if verdict in out else None
+            else:
+                target = name
+
+            if target is None:          # 판정 없음 · 레인에 없는 판정
+                dropped += 1
+                continue
+            if target != name:
+                dt = parse_dt(a.published)
+                cutoff = cutoffs.get(target)
+                if dt and cutoff and dt < cutoff:
+                    stale[f"{name}→{target}"] += 1
+                    continue
+            if url in seen[target]:
+                continue
+            seen[target].add(url)
+            out[target].append(a)
+            if target != name:
+                moved[f"{name}→{target}"] += 1
+
+    if moved or dropped or stale:
+        log.info(
+            "주제 판정 재배치 "
+            + " · ".join(f"{k} {v}건" for k, v in moved.most_common())
+            + (f" · 배정 불가 {dropped}건" if dropped else "")
+        )
+    if stale:
+        log.info(
+            "도착 레인 조회일수 초과로 제외 "
+            + " · ".join(f"{k} {v}건" for k, v in stale.most_common())
+        )
+    for name, arts in out.items():
+        log.info(f"[{name}] 재배치 후 후보 {len(arts)}건")
+    return out
+
+
+# ── 보류 목록 (state.held) ───────────────────────────────
+_ARTICLE_FIELDS = {f.name for f in fields(Article)}
+
+
+def _load_held(st: dict, processed: set[str]) -> list[tuple[str, Article]]:
+    """이전 실행의 보류 기사를 되살린다. 날짜 필터를 거치지 않는다.
+
+    버리는 것: 이미 처리한 기사 · 발행일이 HELD_MAX_DAYS 를 넘은 기사
+              · 지금 설정에 없는 레인의 기사 (레인 이름을 바꾼 경우)
+    본문은 저장해 둔 것을 쓴다 — 다시 받으면 403·타임아웃으로 잃을 수 있다.
+    소주제·매칭 키워드는 비운다. 이번 실행의 선정·배치가 다시 채운다.
+    """
+    cutoff = datetime.now(KST) - timedelta(days=HELD_MAX_DAYS)
+    lane_names = {l.name for l in LANES}
+    out: list[tuple[str, Article]] = []
+    done = expired = orphan = broken = 0
+
+    for h in st.get("held", []):
+        try:
+            a = Article(**{k: v for k, v in h["article"].items() if k in _ARTICLE_FIELDS})
+        except (TypeError, KeyError):
+            broken += 1
+            continue
+        if _norm(a.url) in processed:
+            done += 1
+            continue
+        dt = parse_dt(a.published)
+        if dt and dt < cutoff:
+            expired += 1
+            continue
+        if h.get("lane") not in lane_names:
+            orphan += 1
+            continue
+        out.append((h["lane"], replace(a, subtopics=[], matched_keywords=[])))
+
+    dropped = [
+        f"{label} {n}건"
+        for label, n in (("처리됨", done), (f"{HELD_MAX_DAYS}일 경과", expired),
+                         ("레인 없음", orphan), ("형식 오류", broken))
+        if n
+    ]
+    log.info(
+        f"보류분 {len(out)}건 불러옴"
+        + (f" (제외: {' · '.join(dropped)})" if dropped else "")
+    )
+    return out
+
+
+def _merge_held(
+    lanes: dict[str, list[Article]], held: list[tuple[str, Article]]
+) -> dict[str, list[Article]]:
+    """보류분을 레인 후보 뒤에 붙인다. 이번에 새로 수집된 같은 기사가 있으면 그쪽을 쓴다.
+
+    새 수집본을 남기는 이유: 검색 순위가 지금 기준이다. 보류분의 순위는
+    보류된 날의 값이라 같은 목록 안에서 비교하면 어긋난다.
+    """
+    present = {canonical_url(a.url) for arts in lanes.values() for a in arts}
+    added: Counter = Counter()
+    for lane, a in held:
+        url = canonical_url(a.url)
+        if url in present:
+            continue
+        lanes.setdefault(lane, []).append(a)
+        present.add(url)
+        added[lane] += 1
+    if added:
+        log.info("보류분 합류 " + " · ".join(f"[{k}] {v}건" for k, v in added.items()))
+    return lanes
+
+
+def _held_entries(
+    st: dict, ranked: dict[str, list[Article]], done: set[str]
+) -> list[dict]:
+    """이번 실행에서 선정됐지만 발행되지 않은 기사 → 다음 보류 목록.
+
+    4건 미달로 잘린 것뿐 아니라 소주제·초안·저장이 실패한 묶음의 기사도
+    여기로 온다. 선정 목록 전체에서 발행된 것만 빼면 되므로 실패 경로를
+    따로 셀 필요가 없다.
+
+    이번 선정에 들지 못한 이전 보류분(같은 사건이 이미 발행됨 등)은
+    목록에서 빠진다. 선정 단계가 거른 이유가 그대로 유효하기 때문이다.
+
+    held_since 는 처음 보류된 시각을 유지한다 (며칠째 보류인지 보려고).
+    """
+    since = {
+        _norm(h["article"].get("url", "")): h.get("held_since")
+        for h in st.get("held", [])
+        if isinstance(h.get("article"), dict)
+    }
+    now = datetime.now(KST).isoformat(timespec="seconds")
+    entries: list[dict] = []
+    seen: set[str] = set()
+    for lane, arts in ranked.items():
+        for a in arts:
+            u = _norm(a.url)
+            if u in done or u in seen:
+                continue
+            seen.add(u)
+            entries.append({
+                "lane": lane,
+                "held_since": since.get(u) or now,
+                # 추출 원본(body)은 뺀다. 이후 단계는 body_clean 만 본다.
+                "article": replace(a, body="", subtopics=[]).to_dict(),
+            })
+    return entries
+
+
+def _save_state(
+    st: dict,
+    ranked: dict[str, list[Article]],
+    done: set[str],
+    off_topic: list[str],
+    collected_until: str | None,
+    *,
+    events: list[set[str]] | None = None,
+    keep_days: int | None = None,
+) -> int:
+    """보류 목록을 갱신하고 처리 이력·사건 이력과 함께 저장한다. 보류 건수를 돌려준다.
+
+    _held_entries 를 먼저 부른다 — 이전 보류분의 held_since 를 읽어야 해서
+    st["held"] 를 덮어쓰기 전이어야 한다.
+    events · keep_days 는 초안을 저장한 실행에서만 넘긴다 (사건 이력).
+    """
+    st["held"] = _held_entries(st, ranked, done)
+    extra = {}
+    if events is not None:
+        extra = {"events": events, "keep_days": keep_days}
+    state.mark_processed(
+        st, list(done) + [_norm(u) for u in off_topic], collected_until, **extra
+    )
+    by_lane = Counter(h["lane"] for h in st["held"])
+    log.info(
+        f"보류 누적 {len(st['held'])}건"
+        + (" (" + " · ".join(f"{k} {v}" for k, v in by_lane.items()) + ")" if by_lane else "")
+    )
+    return len(st["held"])
+
+
 def select_by_lane(
     lanes: dict[str, list[Article]],
-    per_post: int,
+    per_post: int | None,
     *,
     known_events: list[set[str]] | None = None,
 ) -> tuple[dict[str, tuple[list[Article], list[list[Article]]]], list[str]]:
@@ -226,6 +461,10 @@ def select_by_lane(
 
     known_events 는 이전 회차 초안에 쓴 사건의 시그니처다. 이와 닮은 기사는
     모든 레인에서 후보에서 뺀다. 주지 않으면(sweep.py) 이번 실행만 본다.
+
+    per_post 가 None 이면 레인마다 전체 순위를 돌려준다. run() 은 이번에
+    발행하지 못한 사건도 보류 목록에 쌓아야 하므로 전체를 받는다.
+    sweep.py 는 지금처럼 정수를 넘긴다.
 
     run() 에서 떼어낸 이유: 이 단계는 네트워크·Notion·상태를 전혀 건드리지
     않는 순수 계산이다. 저장된 CSV 로 임계값을 바꿔 가며 결과를 비교하는
@@ -270,6 +509,7 @@ def select_by_lane(
         if verdicts:
             tally = Counter(verdicts.values())
             log.info("주제 판정 " + " · ".join(f"{k} {v}건" for k, v in tally.most_common()))
+            lanes = _reassign_by_verdict(lanes, verdicts)
         else:
             log.warning(
                 f"주제 판정 결과가 비었습니다 — [{CLASSIFY_LANE}] 레인을 "
@@ -291,18 +531,12 @@ def select_by_lane(
                 continue
             pool.append(a)
 
-        # 이 레인만 검색 키워드가 아니라 기사 내용으로 후보를 정한다.
-        # 판정 여유(1·2등 차이)로 거르지 않는 이유: 실측이 반대였다.
-        # 착공식 기사들은 여유 0.02~0.04 인데 전부 조직 정답이었고
-        # (한 기사에 착공식과 대회 개막이 같이 들어 있어 1·2등이 붙는다),
-        # 여유 0.41~0.49 인 세 건은 전부 오판이었다.
-        if kw == CLASSIFY_LANE and verdicts:
-            before = len(pool)
-            pool = [a for a in pool if verdicts.get(canonical_url(a.url)) == ORG]
-            log.info(f"[{kw}] 주제 판정으로 후보 좁힘: {before}건 → {len(pool)}건")
-
+        # 조직 레인 배정은 루프 앞 _reassign_by_verdict 가 끝냈다.
+        # 판정 여유(1·2등 차이)로 거르지 않는 이유는 그대로다: 착공식 기사들은
+        # 여유 0.02~0.04 인데 전부 조직 정답이었고, 여유 0.41~0.49 인 세 건은
+        # 전부 오판이었다.
         off_topic += [a.url for a in pool if not is_on_topic(a)[0]]
-        log.info(f"── [{kw}] 선정 (후보 {len(pool)}건 → 최대 {per_post}건) ──")
+        log.info(f"── [{kw}] 선정 (후보 {len(pool)}건 → 최대 {per_post or '전체'}건) ──")
         # 사건 묶기도 레인 간 제외와 같은 전체 시그니처로 한다 (rank() 주석 참고)
         selected, clusters = rank(
             pool, top_n=per_post, return_clusters=True, signatures=signatures
@@ -447,22 +681,27 @@ def run(
             articles += kept
 
         # 3) 처리 이력 제외
+        processed = set(st["processed_urls"]) if skip_duplicates else set()
         if skip_duplicates:
-            processed = set(st["processed_urls"])
             before = len(articles)
             articles = [a for a in articles if _norm(a.url) not in processed]
             log.info(f"처리 이력 제외 {before - len(articles)}건 → {len(articles)}건")
 
-        if not articles:
-            log.info("새로운 기사가 없습니다. 파이프라인 종료")
+        # 3-1) 보류분 — 날짜 창과 무관하게 후보로 되살린다
+        held = _load_held(st, processed)
+
+        if not articles and not held:
+            log.info("새로운 기사도 보류분도 없습니다. 파이프라인 종료")
             if not dry_run:
                 notify_empty("자동 파이프라인", "새로운 기사가 없습니다")
             return
 
+        # 수집 기준 시각은 새 수집분으로만 정한다. 보류분의 발행일은 과거라
+        # 넣어도 mark_processed 가 무시하지만, 섞지 않는 편이 읽기 쉽다.
         collected_until = latest_published(articles)
 
-        # 4) 키워드별로 나누고 본문 확보 (URL 당 한 번)
-        lanes = _extract_once(_split_by_lane(articles))
+        # 4) 레인별로 나누고 본문 확보 (URL 당 한 번) → 보류분 합류
+        lanes = _merge_held(_extract_once(_split_by_lane(articles)), held)
 
         # 5) 레인별 선정 — 앞 레인이 고른 기사는 뒤 레인 후보에서 뺀다
         per_post = BUNDLE_SIZE * POSTS_PER_KEYWORD
@@ -472,19 +711,21 @@ def run(
         known = state.recent_events(st, keep_days)
         if known:
             log.info(f"사건 이력 {len(known)}건 (최근 {keep_days}일 초안)")
-        picks, off_topic = select_by_lane(lanes, per_post, known_events=known)
+        #    전체 순위를 받는다: 이번에 못 쓴 사건도 보류 목록에 쌓아야 한다.
+        picks, off_topic = select_by_lane(lanes, None, known_events=known)
+        ranked = {kw: list(sel) for kw, (sel, _) in picks.items()}
 
-        save_csv([a for sel, _ in picks.values() for a in sel], prefix="selected")
+        save_csv([a for sel in ranked.values() for a in sel], prefix="selected")
 
         # 5-1) 4건 단위로 자른다 — 묶음이 안 되는 나머지에 소주제를 만들면
-        #      LLM 호출만 쓰고 버린다. 잘린 기사는 다음 실행에서 다시 후보가 된다.
+        #      LLM 호출만 쓰고 버린다. 잘린 기사는 보류 목록에 쌓인다.
         held_titles: list[str] = []
         for kw, (sel, clus) in picks.items():
-            usable = len(sel) // BUNDLE_SIZE * BUNDLE_SIZE
+            usable = min(len(sel) // BUNDLE_SIZE * BUNDLE_SIZE, per_post)
             if usable < len(sel):
                 log.info(
-                    f"[{kw}] 선정 {len(sel)}건 중 {len(sel) - usable}건은 "
-                    f"{BUNDLE_SIZE}건 단위를 채우지 못해 다음 실행으로 넘깁니다"
+                    f"[{kw}] 선정 {len(sel)}건 중 {len(sel) - usable}건 보류 "
+                    f"({BUNDLE_SIZE}건 단위 · 레인당 {POSTS_PER_KEYWORD}편)"
                 )
                 held_titles += [a.title for a in sel[usable:]]
             picks[kw] = (sel[:usable], clus[:usable])
@@ -493,11 +734,11 @@ def run(
         if not all_selected:
             log.info(f"{BUNDLE_SIZE}건을 채운 레인이 없습니다. 파이프라인 종료")
             if not dry_run:
-                state.mark_processed(st, [_norm(u) for u in off_topic], collected_until)
+                n = _save_state(st, ranked, set(), off_topic, collected_until)
                 notify_empty(
                     "자동 파이프라인",
                     f"키워드별 {BUNDLE_SIZE}건을 채우지 못해 초안을 쓰지 않았습니다 "
-                    f"(보류 {len(held_titles)}건)",
+                    f"(보류 누적 {n}건)",
                 )
             return
 
@@ -524,13 +765,13 @@ def run(
             log.info(f"[{kw}] 묶음 {len(got)}편 · 보류 {len(held)}건")
 
         if not bundles:
-            log.info("완성된 묶음이 없습니다. 보류 기사는 다음 실행에서 다시 후보가 됩니다")
+            log.info("완성된 묶음이 없습니다. 선정 기사는 보류 목록에 쌓입니다")
             if not no_notion:
-                state.mark_processed(st, [_norm(u) for u in off_topic], collected_until)
+                n = _save_state(st, ranked, set(), off_topic, collected_until)
                 notify_empty(
                     "자동 파이프라인",
                     f"키워드별 {BUNDLE_SIZE}건을 채우지 못해 초안을 쓰지 않았습니다 "
-                    f"(보류 {len(held_titles)}건)",
+                    f"(보류 누적 {n}건)",
                 )
             return
 
@@ -546,24 +787,25 @@ def run(
             log.info("Notion 사용 안 함 (--no-notion) — 처리 이력을 남기지 않습니다")
             return
 
-        # 9) 처리 이력 — 저장된 글의 기사(+같은 사건) · 주제 부적합 기사
-        done = [u for it in saved for u in it.get("member_urls", [])]
+        # 9) 처리 이력 · 사건 이력 · 보류 목록
+        #    저장된 글의 기사(+같은 사건) · 주제 부적합 기사는 이력으로,
+        #    실패한 묶음의 기사는 보류 목록으로 돌아간다.
+        #    _pool(lanes) 에는 보류분도 들어 있다 — 보류분이 대표 기사로
+        #    발행돼도 사건 시그니처가 남는다.
+        done = {_norm(u) for it in saved for u in it.get("member_urls", [])}
         signatures = build_signatures(_pool(lanes))
         events = [
             signatures[u] for it in saved for u in it.get("rep_urls", [])
             if signatures.get(u)
         ]
-        state.mark_processed(
-            st,
-            [_norm(u) for u in done + off_topic],
-            collected_until,
-            events=events,
-            keep_days=keep_days,
+        _save_state(
+            st, ranked, done, off_topic, collected_until,
+            events=events, keep_days=keep_days,
         )
         failed = len(bundles) - len(saved)
         log.info(
             f"파이프라인 종료 — 초안 {len(saved)}/{len(bundles)}편 저장"
-            + (f" (실패 {failed}편은 다음 실행에서 다시 후보)" if failed else "")
+            + (f" (실패 {failed}편의 기사는 보류 목록으로)" if failed else "")
         )
         if not saved:
             notify_empty("자동 파이프라인", f"초안 {len(bundles)}편을 모두 저장하지 못했습니다")

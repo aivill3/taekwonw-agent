@@ -34,6 +34,7 @@ from datetime import datetime
 
 from config.settings import DRAFT_DIR, IMAGE_SOURCE, KST
 from core.logger import get_logger
+from core.text_metrics import prose_chars
 from tools.slack_notifier import notify_published
 from tools.notion_store import append_illustrated_draft, insert_images_at_slots
 from tools.notion_content_store import (
@@ -264,6 +265,7 @@ def publish_bundles(
                 search_keyword=it.get("search_keyword", ""),
                 search_ranks=it.get("search_ranks"),
                 run_at=it.get("run_at", ""),
+                draft_chars=prose_chars(it["markdown"]),
             ) or ""
         except Exception as e:
             # 원고는 이미 만들어졌지만 저장에 실패했다. 로컬 파일로는

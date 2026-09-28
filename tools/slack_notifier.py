@@ -19,6 +19,7 @@ import requests
 
 from config.settings import SLACK_WEBHOOK_URL
 from core.logger import get_logger, logfile
+from core.text_metrics import prose_chars
 
 log = get_logger(__name__)
 
@@ -108,7 +109,7 @@ def notify_selected(articles: list, stats: dict | None = None) -> None:
 def notify_published(items: list[dict]) -> None:
     """초안 작성 완료 알림.
 
-    items: [{page_id, title, markdown, model, images}]
+    items: [{page_id, title, markdown, model, images, brief}]
     """
     if not items:
         return
@@ -123,7 +124,20 @@ def notify_published(items: list[dict]) -> None:
     for i, it in enumerate(items, 1):
         md = it.get("markdown", "")
         title = md.split("\n", 1)[0].removeprefix("# ").strip() or it.get("title", "")
-        meta = [f"{len(md)}자"]
+        # 분량의 기준은 순수 본문 하나다. len(md) 는 줄바꿈·조판 기호·CTA 까지
+        # 세어 15% 가량 크게 나와 목표를 넘은 것처럼 보인다.
+        # (2026-09-23: '2205자'로 찍힌 초안의 본문은 약 1,870자)
+        # 목표 범위 안이면 숫자만, 벗어났을 때만 판정을 붙인다.
+        body = prose_chars(md)
+        size = f"본문 {body:,}자"
+        brief = it.get("brief")
+        if brief is not None:
+            lo, hi, _ = brief.target_length()
+            if body > hi:
+                size += f" ({body - hi:,}자 초과)"
+            elif body < lo:
+                size += f" ({lo - body:,}자 부족)"
+        meta = [size]
         if it.get("images"):
             meta.append(f"삽화 {len(it['images'])}장")
         if it.get("model"):

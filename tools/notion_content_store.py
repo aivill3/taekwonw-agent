@@ -68,6 +68,7 @@ PROP_NEWS = "원문기사"      # relation -> News DB (사람용)
 PROP_NEWS_IDS = "원문ID"    # rich_text — page_id 목록 (코드용)
 PROP_COUNT = "기사수"       # number
 PROP_CHARS = "원문길이"     # number
+PROP_DRAFT_CHARS = "초안길이"  # number — 완성 초안의 순수 본문 길이 (prose_chars)
 PROP_TARGET = "목표분량"    # rich_text
 PROP_URL = "대표URL"        # url
 PROP_WRITER_MODEL = "작성모델"  # rich_text
@@ -115,6 +116,7 @@ EXPECTED_PROPS: dict[str, dict] = {
     PROP_NEWS_IDS: {"rich_text": {}},
     PROP_COUNT: {"number": {"format": "number"}},
     PROP_CHARS: {"number": {"format": "number"}},
+    PROP_DRAFT_CHARS: {"number": {"format": "number"}},
     PROP_TARGET: {"rich_text": {}},
     PROP_URL: {"url": {}},
     PROP_WRITER_MODEL: {"rich_text": {}},
@@ -450,6 +452,7 @@ def create_content(
     search_keyword: str = "",
     search_ranks: list[int] | None = None,
     run_at: str = "",
+    draft_chars: int = 0,
 ) -> str | None:
     """묶음 하나를 Content 페이지로 만든다. page_id 를 반환한다.
 
@@ -479,6 +482,10 @@ def create_content(
     }
     if head_url:
         props[PROP_URL] = {"url": head_url}
+    # 초안길이 — 목표분량 열과 같은 단위(순수 본문)다. 보드에서 정렬·필터로
+    # 분량을 검수할 수 있게 숫자 열로 둔다. 초안 없이 만드는 옛 경로는 0 이라 비운다.
+    if draft_chars:
+        props[PROP_DRAFT_CHARS] = {"number": draft_chars}
 
     ranks = list(search_ranks or [])
     ranks += [0] * (len(brief.articles) - len(ranks))

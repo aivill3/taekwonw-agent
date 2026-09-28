@@ -277,16 +277,18 @@ def _generate(item: dict, model: str, corpus: BlogCorpus | None) -> str:
 
 
 def _length_summary(markdown: str, item: dict) -> str:
-    """초안 분량 로그 문구. 마크다운 길이와 순수 본문 길이를 함께 보여준다.
+    """초안 분량 로그 문구. 순수 본문 길이와 목표 대비 판정만 보여준다.
 
-    목표 분량(1,700~1,900자 등)은 순수 본문(prose_chars) 기준이다. 마크다운
-    길이만 찍으면 줄바꿈·표·제목까지 세어 초과로 오인하기 쉽다.
-    (2026-09-23: '2,321자'로 찍힌 초안의 순수 본문은 1,966자였다)
+    분량의 기준은 순수 본문(prose_chars) 하나다. 프롬프트 지시·품질 검사·
+    Slack·Notion 이 모두 이 값을 쓴다. len(markdown) 은 줄바꿈·조판 기호·CTA
+    까지 세어 15% 가량 크게 나오는데, 검수에 쓰는 곳이 없고 함께 찍으면
+    목표와 잘못 비교하게 된다. (2026-09-23: '2,321자'로 찍힌 초안의 순수
+    본문은 1,966자였다)
     편별 값은 metrics.jsonl 에도 남지만 Actions 에서는 러너와 함께 사라지므로
     로그 한 줄로 확인할 수 있게 한다.
     """
     body = prose_chars(markdown)
-    text = f"마크다운 {len(markdown):,}자 · 본문 {body:,}자"
+    text = f"본문 {body:,}자"
     brief = item.get("brief")
     if brief is None:
         return text

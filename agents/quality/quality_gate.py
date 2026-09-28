@@ -309,8 +309,8 @@ def format_summary(metrics: list[DraftMetrics]) -> str:
         )
     lines.append(f"  지배 문체 분포: {styles}")
     lines.append(
-        f"  분량 평균: 마크다운 {avg(lambda m: m.markdown_chars):.0f}자"
-        f" / 순수 본문 {avg(lambda m: m.report.seo.body_chars if m.report.seo else 0):.0f}자"
+        f"  분량 평균: 본문 "
+        f"{avg(lambda m: m.report.seo.body_chars if m.report.seo else 0):.0f}자"
     )
 
     blocked = [m for m in metrics if m.blocked]
@@ -361,7 +361,13 @@ def notion_summary(m: DraftMetrics) -> str:
     mo = r.morphology
     se = r.sentiment
     seo = r.seo
-    lines: list[str] = [f"[{'차단' if m.blocked else '통과'}] {r.char_count}자"]
+    # 분량은 순수 본문 하나만 보인다. 목표분량 열과 같은 단위이고, 셀에서
+    # 가장 먼저 보이도록 첫 줄에 둔다. (예전 첫 줄의 r.char_count 는 줄바꿈을
+    # 포함한 원시 길이라 목표와 비교하면 초과로 오인했다)
+    head = f"[{'차단' if m.blocked else '통과'}]"
+    if seo:
+        head += f" 본문 {seo.body_chars:,}자"
+    lines: list[str] = [head]
 
     if se:
         lines.append(
@@ -390,7 +396,7 @@ def notion_summary(m: DraftMetrics) -> str:
     if seo:
         lines.append(
             f"■ 구조 제목 {seo.title_length}자 / 챕터 {seo.chapter_count}개 "
-            f"/ 본문 {seo.body_chars}자 / 20자 이하 줄 {seo.short_line_ratio:.0%}"
+            f"/ 20자 이하 줄 {seo.short_line_ratio:.0%}"
         )
 
     if r.warnings:
